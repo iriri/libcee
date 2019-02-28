@@ -1,0 +1,309 @@
+#ifndef CEE_CHAN_H
+#define CEE_CHAN_H
+#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
+
+#include <cee/cee.h>
+#include <cee/ftx.h>
+#include <cee/mtx.h>
+#include <cee/xops.h>
+
+/* ------------------------------- Interface ------------------------------- */
+/* Each individual channel type must be defined before use. Pointer types must
+ * be wrapped with `p` instead of using `*` as type names are created via token
+ * pasting. E.g. `CHAN_DEF_P(int);` defines the type of channels of pointers to
+ * integers and `chan(p(int)) c;` declares one such channel. */
+#define chan(T) chan_paste_(T)
+#define CHAN_DEF(T) \
+    typedef union chan(T) { \
+        chan_ _chan; \
+        uint32_t cap; \
+        T *const _phantom; \
+    } chan(T)
+#define CHAN_DEF_P(T) \
+    P_DEF(T); \
+    CHAN_DEF(p(T))
+
+typedef struct chan_set chan_set;
+
+/* Return codes */
+__extension__ typedef enum chan_rc {
+    CHAN_OK,
+    CHAN_WBLOCK = SIZE_MAX - 1,
+    CHAN_CLOSED,
+} chan_rc;
+
+/* Op codes */
+typedef enum chan_op {
+    CHAN_NOOP,
+    CHAN_SEND,
+    CHAN_RECV,
+} chan_op;
+
+/* Exported "functions" */
+#define chan_make(T, cap) __extension__ ({ \
+    _Static_assert( \
+        CHAN_ALL_(chan_check_msgsize_, T) false, "unsupported message size"); \
+    (chan(T) *)chan_make_(sizeof(T), cap, chan_cellsize_(T)); \
+})
+#define chan_dup(c) chan_dup_(c, __COUNTER__)
+#define chan_drop(c) chan_drop_(&(c)->_chan)
+#define chan_open(c) chan_open_(c, __COUNTER__)
+#define chan_close(c) chan_close_(&(c)->_chan)
+
+#define chan_cap(c) ((c)->cap)
+
+#define chan_send(c, msg) chan_send_(c, msg, , __COUNTER__)
+#define chan_trysend(c, msg) chan_send_(c, msg, try, __COUNTER__)
+#define chan_timedsend(c, msg, timeout) __extension__ ({ \
+    chan_assert_compatible_(c, msg); \
+    CHAN_MATCH_(msg, chan_timedsend_, c, msg, timeout, __COUNTER__); \
+})
+
+#define chan_recv(c, msg) chan_recv_(c, msg, )
+#define chan_tryrecv(c, msg) chan_recv_(c, msg, try)
+#define chan_timedrecv(c, msg, timeout) __extension__ ({ \
+    chan_assert_compatible_(c, *msg); \
+    CHAN_MATCH_(*msg, chan_timedrecv_, c, msg, timeout, ); \
+})
+
+#define chan_set_make(cap) chan_set_make_(cap)
+#define chan_set_drop(set) chan_set_drop_(set)
+#define chan_set_add(set, c, op, msg) __extension__ ({ \
+    chan_assert_compatible_(c, *msg); \
+    chan_set_add_(set, &(c)->_chan, op, msg, chan_sel_fns_(msg)); \
+})
+#define chan_set_rereg(set, id, op, msg) ( \
+    chan_assert_compatible_(c, *msg); \
+    chan_set_rereg_(set, id, op, msg) \
+)
+
+#define chan_select(set) chan_select_(set, UINT64_MAX)
+#define chan_tryselect(set) chan_select_(set, 0)
+#define chan_timedselect(set, timeout) chan_select_(set, timeout)
+
+/* `chan_poll` is an alternative to `chan_select`. It continuously loops over
+ * the cases (`fn` is intended to be either `chan_trysend` or `chan_tryrecv`)
+ * rather than blocking, which may be preferable in cases where one of the
+ * functions is expected to succeed or if there is a default case but burns a
+ * lot of cycles otherwise. */
+#define chan_poll(casec) if (1) { \
+    bool Xdone_ = false; \
+    switch (rand() % casec) { \
+    for ( ; ; Xdone_ = true)
+#define chan_case(id, fn, ...) \
+    /* fallthrough */ \
+    case id: \
+        if (fn == CHAN_OK) { \
+            __VA_ARGS__; \
+            break; \
+        } else (void)0
+#define chan_default(...) \
+        if (Xdone_) { \
+            __VA_ARGS__; \
+            break; \
+        } else (void)0
+#define chan_poll_end } } else (void)0
+
+/* ---------------------------- Implementation ---------------------------- */
+#define chan_paste_(T) chan_##T##_
+
+#define CHAN_ALL_(f, a) \
+    f(cee_u32_, a) \
+    f(cee_u64_, a) \
+    f(cee_u128_, a) \
+    f(cee_u192_, a) \
+    f(cee_u256_, a)
+#define CHAN_MATCH_(l, r, c, msg, a, b) \
+    sizeof(l) == sizeof(cee_u32_) ? r(cee_u32_, c, msg, a, b) : \
+    sizeof(l) == sizeof(cee_u64_) ? r(cee_u64_, c, msg, a, b) : \
+    sizeof(l) == sizeof(cee_u128_) ? r(cee_u128_, c, msg, a, b) : \
+    sizeof(l) == sizeof(cee_u192_) ? r(cee_u192_, c, msg, a, b) : \
+        r(cee_u256_, c, msg, a, b)
+
+typedef struct chan_waiter_root_ {
+    union chan_waiter_ *_Atomic next, *_Atomic prev;
+} chan_waiter_root_;
+
+typedef struct chan_waiter_hdr_ {
+    union chan_waiter_ *next, *prev;
+    _Atomic ftx *tag;
+    _Atomic size_t *sel_state;
+    size_t sel_id;
+    _Atomic bool ref;
+} chan_waiter_hdr_;
+
+/* Buffered waiters currently only use the fields in the shared header. */
+typedef struct chan_waiter_hdr_ chan_waiter_buf_;
+
+typedef struct chan_waiter_unbuf_ {
+    struct chan_waiter_unbuf_ *next, *prev;
+    _Atomic ftx *tag;
+    _Atomic size_t *sel_state;
+    size_t sel_id;
+    _Atomic bool ref;
+    void *msg;
+    bool closed;
+} chan_waiter_unbuf_;
+
+typedef union chan_waiter_ {
+    chan_waiter_root_ root;
+    chan_waiter_hdr_ hdr;
+    chan_waiter_buf_ buf;
+    chan_waiter_unbuf_ unbuf;
+} chan_waiter_;
+
+typedef struct chan_hdr_ {
+    uint32_t cap;
+    mtx lock;
+    _Atomic uint32_t openc, refc;
+    chan_waiter_root_ sendq, recvq;
+} chan_hdr_;
+
+typedef struct chan_unbuf_ {
+    uint32_t cap;
+    mtx lock;
+    _Atomic uint32_t openc, refc;
+    chan_waiter_root_ sendq, recvq;
+    size_t msgsize;
+} chan_unbuf_;
+
+typedef union chan_aun64_ {
+    _Atomic uint64_t u64;
+    struct {
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+        _Atomic uint32_t idx, lap;
+#else
+        _Atomic uint32_t lap, idx;
+#endif
+    };
+} chan_aun64_;
+
+typedef union chan_un64_ {
+    uint64_t u64;
+    struct {
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+        uint32_t idx, lap;
+#else
+        uint32_t lap, idx;
+#endif
+    };
+} chan_un64_;
+
+#define chan_cell_(T) chan_cell_##T##_
+
+#define CHAN_CELL_DECL_(T, a_) \
+    typedef struct chan_cell_(T) { \
+        _Atomic uint32_t lap; \
+        T msg; \
+    } chan_cell_(T);
+CHAN_ALL_(CHAN_CELL_DECL_, )
+
+#define chan_cellsize__(T, c_, msg_, a_, b_) sizeof(chan_cell_(T))
+#define chan_cellsize_(T) (CHAN_MATCH_(T, chan_cellsize__, , , , ))
+
+#define chan_buf_(T) chan_buf_##T##_
+#define CHAN_BUF_DECL_(T, a_) \
+    typedef struct chan_buf_(T) { \
+        uint32_t cap; \
+        mtx lock; \
+        _Atomic uint32_t openc, refc; \
+        chan_waiter_root_ sendq, recvq; \
+        const unsigned char pad[64 - (2 * sizeof(chan_waiter_root_))]; \
+        chan_aun64_ write; \
+        const unsigned char pad1[64 - sizeof(chan_aun64_)]; \
+        chan_aun64_ read; \
+        const unsigned char pad2[64 - sizeof(chan_aun64_)]; \
+        chan_cell_(T) buf[]; \
+    } chan_buf_(T);
+CHAN_ALL_(CHAN_BUF_DECL_, )
+
+#define CHAN_BUF_MEMB_(T, a_) chan_buf_(T) buf_##T##_;
+
+typedef union chan_ {
+    chan_hdr_ hdr;
+    chan_unbuf_ unbuf;
+    CHAN_ALL_(CHAN_BUF_MEMB_, )
+} chan_;
+
+typedef struct chan_case_ chan_case_;
+
+typedef struct chan_select_fns_ {
+    chan_rc (*try)(chan_case_ *cc);
+    bool (*check)(chan_ *c, chan_op op);
+} chan_select_fns_;
+
+/* This has gotten kind of bloated... */
+struct chan_case_ {
+    chan_ *c;
+    void *msg;
+    chan_select_fns_ fns;
+    chan_op op;
+    chan_waiter_ waiter;
+};
+
+#define chan_check_msgsize_(T, T1) sizeof(T) == sizeof(T1) ||
+#define chan_assert_compatible_(c, msg) \
+    _Static_assert( \
+        _Generic((msg), __typeof(*c->_phantom): true, default: false), \
+        "incompatible channel and message types") \
+
+#define chan_send__(T, c, msg, mod, id) \
+    chan_##mod##send_##T##_(&(c)->_chan, cee_to_(T, msg, id))
+#define chan_send_(c, msg, mod, id) __extension__ ({ \
+    chan_assert_compatible_(c, msg); \
+    CHAN_MATCH_(msg, chan_send__, c, msg, mod, id); \
+})
+
+#define chan_timedsend_(T, c, msg, timeout, id) \
+    chan_timedsend_##T##_(&(c)->_chan, cee_to_(T, msg, id), timeout)
+
+#define chan_recv__(T, c, msg, mod, b_) \
+    chan_##mod##recv_##T##_(&(c)->_chan, msg)
+#define chan_recv_(c, msg, mod) __extension__ ({ \
+    chan_assert_compatible_(c, *msg); \
+    CHAN_MATCH_(*msg, chan_recv__, c, msg, mod, ); \
+})
+
+#define chan_timedrecv_(T, c, msg, timeout, b_) \
+    chan_timedrecv_##T##_(&(c)->_chan, msg, timeout)
+
+#define chan_dup_(c, id) __extension__ ({ \
+    __auto_type cee_sym_(c_, id) = c; \
+    uint32_t prev = xadd_rlx(&cee_sym_(c_, id)->_chan.hdr.refc, 1); \
+    cee_assert(0 < prev && prev < UINT32_MAX); \
+    cee_sym_(c_, id); \
+})
+
+#define chan_open_(c, id) __extension__ ({ \
+    __auto_type cee_sym_(c_, id) = c; \
+    uint32_t prev = xadd_rlx(&cee_sym_(c_, id)->_chan.hdr.openc, 1); \
+    cee_assert(0 < prev && prev < UINT32_MAX); \
+    cee_sym_(c_, id); \
+})
+
+#define chan_sel_fns__(T, c_, msg_, a_, b_) \
+    (chan_select_fns_){chan_select_try_##T##_, chan_select_check_##T##_}
+#define chan_sel_fns_(msg) (CHAN_MATCH_(msg, chan_sel_fns__, , , , ))
+
+#define CHAN_FN_DECL_(T, a_) \
+    chan_rc chan_send_##T##_(chan_ *, T); \
+    chan_rc chan_recv_##T##_(chan_ *, void *); \
+    chan_rc chan_trysend_##T##_(chan_ *, T); \
+    chan_rc chan_tryrecv_##T##_(chan_ *, void *); \
+    chan_rc chan_timedsend_##T##_(chan_ *, T, uint64_t); \
+    chan_rc chan_timedrecv_##T##_(chan_ *, void *, uint64_t); \
+    chan_rc chan_select_try_##T##_(chan_case_ *cc); \
+    bool chan_select_check_##T##_(chan_ *c, chan_op op);
+
+void *chan_make_(uint32_t, size_t, size_t);
+void *chan_drop_(chan_ *);
+void *chan_close_(chan_ *);
+CHAN_ALL_(CHAN_FN_DECL_, )
+chan_set *chan_set_make_(size_t);
+chan_set *chan_set_drop_(chan_set *);
+size_t chan_set_add_(chan_set *, chan_ *, chan_op, void *, chan_select_fns_);
+void chan_set_rereg_(chan_set *, size_t, chan_op, void *);
+size_t chan_select_(chan_set *, uint64_t);
+#endif

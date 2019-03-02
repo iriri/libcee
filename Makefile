@@ -2,11 +2,11 @@ CC = gcc
 #CC = clang
 AR = gcc-ar
 #AR = llvm-ar
-CFLAGS = -Wall -Wextra -Wpedantic -std=gnu11
+CFLAGS = -Wall -Wextra -Wpedantic -std=gnu11 -Iinclude -pthread -O2 -flto
+CFLAGS += -ffat-lto-objects
 CFLAGS += -Werror
-CFLAGS += -Iinclude -pthread
-CFLAGS += -flto -ffat-lto-objects -O2
-#CFLAGS += -O0 -g3
+#CFLAGS += -g3
+#CFLAGS += -O0
 #CFLAGS += -fno-inline -fno-lto
 #CFLAGS += -fsanitize=address
 #CFLAGS += -fsanitize=thread

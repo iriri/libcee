@@ -5,9 +5,25 @@
 
 #include <cee/map.h>
 
+/* Everything past 29 is shamelessly stolen from "good hash table primes" by
+ * akrowne on PlanetMath. */
+static const size_t map_sizes_[] = {
+    29, 53, 97, 193, 389, 769, 1543, 3079, 6151, 12289, 24593, 49157, 98317,
+    196613, 393241, 786433, 1572869, 3145739, 6291469, 12582917, 25165843,
+    50331653, 100663319, 201326611, 402653189, 805306457, 1610612741
+};
+const size_t MAP_SIZESLEN_ = sizeof(map_sizes_) / sizeof(map_sizes_[0]);
+
 void *
-map_drop_(map_ *m) {
-    free(m->hdr.bkts);
+map_make_(size_t bktsize) {
+    map_hdr_ *m = malloc(sizeof(*m));
+    *m = (map_hdr_){0, calloc(map_sizes_[0], bktsize), 0, map_sizes_[0], 0};
+    return m;
+}
+
+void *
+map_drop_(map_hdr_ *m) {
+    free(m->bkts);
     free(m);
     return NULL;
 }
@@ -53,7 +69,7 @@ map_hash_(unsigned char *buf, size_t size) {
     map_keys_##K##_##V##_(map_(K, V) *m) { \
         K *keys = malloc(m->len * sizeof(*keys)); \
         size_t i = 0; \
-        for (size_t j = 0; j < m->bktcap; j++) { \
+        for (size_t j = 0; j < m->cap; j++) { \
             if (m->bkts[j].state == MAP_BKT_FULL_) { \
                 cee_assert(i < m->len); \
                 keys[i++] = m->bkts[j].key; \
@@ -63,32 +79,21 @@ map_hash_(unsigned char *buf, size_t size) {
     }
 MAP_ALL_IMPL_(MAP_KEYS_DECL_)
 
-/* Everything past 29 is shamelessly stolen from "good hash table primes" by
- * akrowne on PlanetMath. */
-static const size_t map_sizes_[] = {
-    29, 53, 97, 193, 389, 769, 1543, 3079, 6151, 12289, 24593, 49157, 98317,
-    196613, 393241, 786433, 1572869, 3145739, 6291469, 12582917, 25165843,
-    50331653, 100663319, 201326611, 402653189, 805306457, 1610612741
-};
-const size_t MAP_SIZESLEN_ = sizeof(map_sizes_) / sizeof(size_t);
-
 #define MAP_RESIZE_DECL_(K, V, amp, size, eq_) \
     static void \
     map_resize_##K##_##V##_(map_(K, V) *m, size_t sizeidx) { \
         cee_assert(sizeidx < MAP_SIZESLEN_); \
-        size_t bktcap = map_sizes_[sizeidx]; \
-        map_bkt_(K, V) *bkts = calloc(bktcap, sizeof(*bkts)); \
-        for (size_t i = 0; i < m->bktcap; i++) { \
+        size_t cap = map_sizes_[sizeidx]; \
+        map_bkt_(K, V) *bkts = calloc(cap, sizeof(*bkts)); \
+        for (size_t i = 0; i < m->cap; i++) { \
             if (m->bkts[i].state == MAP_BKT_FULL_) { \
-                uint32_t hash = map_hash_( \
-                    (unsigned char *)amp(m->bkts[i].key), \
-                    size(m->bkts[i].key)); \
-                for (size_t j = hash % bktcap; ; j = (j + 1) % bktcap) { \
+                for (size_t j = m->bkts[i].hash % cap; ; j = (j + 1) % cap) { \
                     if (bkts[j].state == MAP_BKT_EMPTY_) { \
                         bkts[j] = (map_bkt_(K, V)){ \
                             m->bkts[i].key, \
                             m->bkts[i].val, \
                             MAP_BKT_FULL_, \
+                            m->bkts[i].hash, \
                         }; \
                         break; \
                     } \
@@ -96,46 +101,47 @@ const size_t MAP_SIZESLEN_ = sizeof(map_sizes_) / sizeof(size_t);
             } \
         } \
         free(m->bkts); \
-        *m = (map_(K, V)){m->len, bkts, m->len, bktcap, sizeidx}; \
+        *m = (map_(K, V)){m->len, bkts, m->len, cap, sizeidx}; \
     }
 MAP_ALL_IMPL_(MAP_RESIZE_DECL_)
 
 /* Linear probing because I'm lazy. Replace with robin hood hashing or w/e. */
-#define MAP_PUT_DECL_(K, V, amp, size, eq) \
+#define MAP_REP_DECL_(K, V, amp, size, eq) \
     bool \
-    map_put_##K##_##V##_(map_(K, V) *m, K key, V val, V *old_val) { \
-        if ((double)m->bktlen / m->bktcap > 0.8) {\
-            map_resize_##K##_##V##_(m, m->sizeidx + 1); \
+    map_rep_##K##_##V##_(map_(K, V) *m, K key, V val, V *old_val) { \
+        if ((double)m->used / m->cap > 0.75) {\
+            map_resize_##K##_##V##_( \
+                m, m->sizeidx + ((double)m->len / m->cap > 0.3 ? 1 : 0)); \
         } \
         uint32_t hash = map_hash_((unsigned char *)amp(key), size(key)); \
-        for (size_t i = hash % m->bktcap; ; i = (i + 1) % m->bktcap) { \
+        for (size_t i = hash % m->cap; ; i = (i + 1) % m->cap) { \
             switch (m->bkts[i].state) { \
             case MAP_BKT_EMPTY_: \
-                m->bkts[i] = (map_bkt_(K, V)){key, val, MAP_BKT_FULL_}; \
+                m->bkts[i] = (map_bkt_(K, V)){key, val, MAP_BKT_FULL_, hash}; \
                 m->len++; \
-                m->bktlen++; \
+                m->used++; \
                 return false; \
             case MAP_BKT_FULL_: \
                 if (eq(key, m->bkts[i].key)) { \
                     if (old_val) { \
                         *old_val = m->bkts[i].val; \
                     } \
-                    m->bkts[i] = (map_bkt_(K, V)){key, val, MAP_BKT_FULL_}; \
-                    m->bktlen++; \
+                    m->bkts[i] = \
+                        (map_bkt_(K, V)){key, val, MAP_BKT_FULL_, hash}; \
+                    m->used++; \
                     return true; \
-                } \
-                break; \
+                } /* fallthrough */\
             case MAP_BKT_TOMB_: break; \
             } \
         } \
     }
-MAP_ALL_IMPL_(MAP_PUT_DECL_)
+MAP_ALL_IMPL_(MAP_REP_DECL_)
 
 #define MAP_GET_DECL_(K, V, amp, size, eq) \
     bool \
     map_get_##K##_##V##_(map_(K, V) *m, K key, V *val) { \
         uint32_t hash = map_hash_((unsigned char *)amp(key), size(key)); \
-        for (size_t i = hash % m->bktcap; ; i = (i + 1) % m->bktcap) { \
+        for (size_t i = hash % m->cap; ; i = (i + 1) % m->cap) { \
             switch (m->bkts[i].state) { \
             case MAP_BKT_EMPTY_: \
                 return false; \
@@ -145,19 +151,18 @@ MAP_ALL_IMPL_(MAP_PUT_DECL_)
                         *val = m->bkts[i].val; \
                     } \
                     return true; \
-                } \
-                break; \
+                } /* fallthrough */ \
             case MAP_BKT_TOMB_: break; \
             } \
         } \
     }
 MAP_ALL_IMPL_(MAP_GET_DECL_)
 
-#define MAP_DEL_DECL_(K, V, amp, size, eq) \
+#define MAP_REM_DECL_(K, V, amp, size, eq) \
     bool \
-    map_del_##K##_##V##_(map_(K, V) *m, K key, V *old_val) { \
+    map_rem_##K##_##V##_(map_(K, V) *m, K key, V *old_val) { \
         uint32_t hash = map_hash_((unsigned char *)amp(key), size(key)); \
-        for (size_t i = hash % m->bktcap; ; i = (i + 1) % m->bktcap) { \
+        for (size_t i = hash % m->cap; ; i = (i + 1) % m->cap) { \
             switch (m->bkts[i].state) { \
             case MAP_BKT_EMPTY_: \
                 return false; \
@@ -168,12 +173,14 @@ MAP_ALL_IMPL_(MAP_GET_DECL_)
                         *old_val = m->bkts[i].val; \
                     } \
                     m->len--; \
+                    if ((double)m->len / m->cap < 0.1 && m->sizeidx > 0) { \
+                        map_resize_##K##_##V##_(m, m->sizeidx - 1); \
+                    } \
                     return true; \
-                } \
-                break; \
+                } /* fallthrough */ \
             case MAP_BKT_TOMB_: break; \
             } \
         } \
         return true; \
     }
-MAP_ALL_IMPL_(MAP_DEL_DECL_)
+MAP_ALL_IMPL_(MAP_REM_DECL_)

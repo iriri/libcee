@@ -1,5 +1,11 @@
-/* Shamelessly copied from "Mutexes and Condition Variables using Futexes" by
- * Steven Fuerst. */
+/* I didn't write this (completely) out of NIH symdrome. I just wanted a mutex
+ * that didn't take up 5/8ths of a cache line, unlike glibc's. I ended up
+ * shamelessly coping the implementation from "Mutexes and Condition Variables
+ * using Futexes" by Steven Fuerst.
+ *
+ * Ironically the bloatedness of glibc's mutex can be a feature. Sometimes it
+ * just happens to push the right fields into different cache lines, improving
+ * performance by preventing false sharing. */
 #include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -11,14 +17,8 @@
 
 #include <cee/mtx.h>
 
-#define SPINS 256
-
+const int SPINS = 256;
 const uint32_t MTX_LOCKED_CONTEND_ = 0x0101;
-
-mtx
-mtx_make(void) {
-    return (mtx){0};
-}
 
 void
 mtx_lock_(mtx *m) {
@@ -43,7 +43,7 @@ mtx_trylock_(mtx *m) {
 }
 
 bool
-mtx_timedlock_(mtx *m, struct timespec timeout) {
+mtx_timedlock_(mtx *m, struct timespec *timeout) {
     uint8_t locked;
     for (int i = 0; i < SPINS; i++) {
         locked = 0;

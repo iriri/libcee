@@ -28,13 +28,13 @@ ftx_wait(_Atomic ftx *f, ftx val) {
 }
 
 int
-ftx_timedwait(_Atomic ftx *f, ftx val, struct timespec timeout) {
+ftx_timedwait(_Atomic ftx *f, ftx val, struct timespec *timeout) {
     while (syscall(
         SYS_futex,
         f,
         FUTEX_WAIT_BITSET_PRIVATE,
         val,
-        &timeout,
+        timeout,
         NULL,
         FUTEX_BITSET_MATCH_ANY) != 0
     ) {

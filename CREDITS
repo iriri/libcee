@@ -1,0 +1,10 @@
+The semantics of the channel library are inspired by channels from the Go
+programming language and the implementations of sending, receiving, and
+selection are based on algorithms described in "Go channels on steroids" by
+Dmitry Vyukov.
+
+The map library uses prime numbers from "good hash table primes" by akrowne on
+PlanetMath and the DJBX33X hash function by, well, Daniel J. Bernstein.
+
+The mutex implementation is shamelessly copied from "Mutexes and Condition
+Variables using Futexes" by Steven Fuerst.

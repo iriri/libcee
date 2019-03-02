@@ -5,13 +5,7 @@
 
 #include <cee/cee.h>
 
-/* ------------------------------- Interface ------------------------------- */
-/* Each individual vector type must be defined before use. Pointer types must
- * be wrapped with `p` instead of using `*` as type names are created via token
- * pasting. E.g. `VEC_DEF_P(int);` defines the type of vectors of pointers to
- * integers and `vec(p(int)) v;` declares one such vector. */
 #define vec(T) vec_paste_(T)
-
 #define VEC_DEF(T) \
     typedef union vec(T) { \
         vec_ _vec; \
@@ -24,7 +18,6 @@
     P_DEF(T); \
     VEC_DEF(p(T))
 
-/* Exported "functions" */
 #define vec_make(T, len, cap) \
     ((vec(T)){{vec_alloc_(sizeof(T), len, cap), len, cap}})
 #define vec_drop(v) (free((v).arr), (__typeof(v)){{0}})
@@ -40,7 +33,6 @@
 #define vec_peek(v, elt) vec_peek_(v, elt, __COUNTER__)
 #define vec_pop(v, elt) vec_pop_(v, elt, __COUNTER__)
 
-/* The `sizeof` is a type check; `v = v1` doesn't actually get evaluated. */
 #define vec_concat(v, v1) \
     do { \
         _Static_assert( \

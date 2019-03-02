@@ -1,19 +1,13 @@
 #ifndef CEE_CHAN_H
 #define CEE_CHAN_H
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
 
 #include <cee/cee.h>
-#include <cee/ftx.h>
 #include <cee/mtx.h>
-#include <cee/xops.h>
 
-/* ------------------------------- Interface ------------------------------- */
-/* Each individual channel type must be defined before use. Pointer types must
- * be wrapped with `p` instead of using `*` as type names are created via token
- * pasting. E.g. `CHAN_DEF_P(int);` defines the type of channels of pointers to
- * integers and `chan(p(int)) c;` declares one such channel. */
 #define chan(T) chan_paste_(T)
 #define CHAN_DEF(T) \
     typedef union chan(T) { \
@@ -27,21 +21,18 @@
 
 typedef struct chan_set chan_set;
 
-/* Return codes */
 __extension__ typedef enum chan_rc {
     CHAN_OK,
     CHAN_WBLOCK = SIZE_MAX - 1,
     CHAN_CLOSED,
 } chan_rc;
 
-/* Op codes */
 typedef enum chan_op {
     CHAN_NOOP,
     CHAN_SEND,
     CHAN_RECV,
 } chan_op;
 
-/* Exported "functions" */
 #define chan_make(T, cap) __extension__ ({ \
     _Static_assert( \
         CHAN_ALL_(chan_check_msgsize_, T) false, "unsupported message size"); \
@@ -83,11 +74,6 @@ typedef enum chan_op {
 #define chan_tryselect(set) chan_select_(set, 0)
 #define chan_timedselect(set, timeout) chan_select_(set, timeout)
 
-/* `chan_poll` is an alternative to `chan_select`. It continuously loops over
- * the cases (`fn` is intended to be either `chan_trysend` or `chan_tryrecv`)
- * rather than blocking, which may be preferable in cases where one of the
- * functions is expected to succeed or if there is a default case but burns a
- * lot of cycles otherwise. */
 #define chan_poll(casec) if (1) { \
     bool Xdone_ = false; \
     switch (rand() % casec) { \
@@ -125,34 +111,6 @@ typedef enum chan_op {
 typedef struct chan_waiter_root_ {
     union chan_waiter_ *_Atomic next, *_Atomic prev;
 } chan_waiter_root_;
-
-typedef struct chan_waiter_hdr_ {
-    union chan_waiter_ *next, *prev;
-    _Atomic ftx *tag;
-    _Atomic size_t *sel_state;
-    size_t sel_id;
-    _Atomic bool ref;
-} chan_waiter_hdr_;
-
-/* Buffered waiters currently only use the fields in the shared header. */
-typedef struct chan_waiter_hdr_ chan_waiter_buf_;
-
-typedef struct chan_waiter_unbuf_ {
-    struct chan_waiter_unbuf_ *next, *prev;
-    _Atomic ftx *tag;
-    _Atomic size_t *sel_state;
-    size_t sel_id;
-    _Atomic bool ref;
-    void *msg;
-    bool closed;
-} chan_waiter_unbuf_;
-
-typedef union chan_waiter_ {
-    chan_waiter_root_ root;
-    chan_waiter_hdr_ hdr;
-    chan_waiter_buf_ buf;
-    chan_waiter_unbuf_ unbuf;
-} chan_waiter_;
 
 typedef struct chan_hdr_ {
     uint32_t cap;
@@ -234,15 +192,6 @@ typedef struct chan_select_fns_ {
     bool (*check)(chan_ *c, chan_op op);
 } chan_select_fns_;
 
-/* This has gotten kind of bloated... */
-struct chan_case_ {
-    chan_ *c;
-    void *msg;
-    chan_select_fns_ fns;
-    chan_op op;
-    chan_waiter_ waiter;
-};
-
 #define chan_check_msgsize_(T, T1) sizeof(T) == sizeof(T1) ||
 #define chan_assert_compatible_(c, msg) \
     _Static_assert( \
@@ -271,14 +220,16 @@ struct chan_case_ {
 
 #define chan_dup_(c, id) __extension__ ({ \
     __auto_type cee_sym_(c_, id) = c; \
-    uint32_t prev = xadd_rlx(&cee_sym_(c_, id)->_chan.hdr.refc, 1); \
+    uint32_t prev = atomic_fetch_add_explicit( \
+        &cee_sym_(c_, id)->_chan.hdr.refc, 1, memory_order_relaxed); \
     cee_assert(0 < prev && prev < UINT32_MAX); \
     cee_sym_(c_, id); \
 })
 
 #define chan_open_(c, id) __extension__ ({ \
     __auto_type cee_sym_(c_, id) = c; \
-    uint32_t prev = xadd_rlx(&cee_sym_(c_, id)->_chan.hdr.openc, 1); \
+    uint32_t prev = atomic_fetch_add_explicit( \
+        &cee_sym_(c_, id)->_chan.hdr.openc, 1, memory_order_relaxed); \
     cee_assert(0 < prev && prev < UINT32_MAX); \
     cee_sym_(c_, id); \
 })

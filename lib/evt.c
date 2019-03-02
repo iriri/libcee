@@ -8,52 +8,38 @@
 
 #include <cee/evt.h>
 
-typedef union evt_un64_ {
-    uint64_t u64;
-    struct {
-        ftx state, waiterc;
-    };
-} evt_un64_;
-
-evt
-evt_make(void) {
-    return (evt){0};
-}
-
 void
 evt_wait(evt *e) {
-    xadd_acr(&e->_waiterc, 1);
-    while (xchg_seq(&e->_state, 0) == 0) {
-        ftx_wait(&e->_state, 0);
+    ftx state;
+    while ((state = xchg_seq(&e->_state, 0)) != 2) {
+        if (state == 1 || xcas_s_seq_rlx(&e->_state, &state, 1)) {
+            ftx_wait(&e->_state, 1);
+        }
     }
-    xsub_acr(&e->_waiterc, 1);
 }
 
 bool
 evt_trywait(evt *e) {
-    return xchg_seq(&e->_state, 0) == 1;
+    ftx exp = 2;
+    return xcas_s_seq_rlx(&e->_state, &exp, 0);
 }
 
 bool
-evt_timedwait(evt *e, struct timespec timeout) {
-    int rc = 0;
-    xadd_acr(&e->_waiterc, 1);
-    while (rc != ETIMEDOUT && xchg_seq(&e->_state, 0) == 0) {
-        rc = ftx_timedwait(&e->_state, 0, timeout);
+evt_timedwait(evt *e, struct timespec *timeout) {
+    ftx state;
+    while ((state = xchg_seq(&e->_state, 0)) != 2) {
+        if (state == 1 || xcas_s_seq_rlx(&e->_state, &state, 1)) {
+            if (ftx_timedwait(&e->_state, 1, timeout) == ETIMEDOUT) {
+                return xchg_seq(&e->_state, 0) == 2;
+            }
+        }
     }
-    xsub_acr(&e->_waiterc, 1);
-    return rc != ETIMEDOUT;
+    return true;
 }
 
 void
 evt_post(evt *e) {
-    evt_un64_ u = {xget_acq(&e->_u64)};
-    while (!xcas_w_seq_acq(&e->_u64, &u.u64, u.u64 + 1)) {
-        if (u.state == 1) {
-            return;
-        }
-    }
-    if (u.waiterc != 0) {
+    if (xchg_seq(&e->_state, 2) == 1) {
         ftx_wake(&e->_state);
     }
 }

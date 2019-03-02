@@ -3,12 +3,10 @@
 #include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include <cee/cee.h>
 
-/* ------------------------------- Interface ------------------------------- */
 #define map(K, V) map_paste_(K, V)
 
 #define MAP_DEF(K, V) \
@@ -36,29 +34,29 @@
         MAP_ALL__(map_check_ksize_, K) false, "unsupported key size"); \
     _Static_assert( \
         MAP_ALL__(map_check_vsize_, V) false, "unsupported value size"); \
-    map(K, V) *m = malloc(sizeof(*m)); \
-    m->_map.hdr = (map_hdr_){0, calloc(29, map_bktsize_(K, V)), 0, 29, 0}; \
-    cee_assert(m->_map.hdr.bkts); \
-    m; \
+    (map(K, V) *)map_make_(map_bktsize_(K, V)); \
 })
-#define map_drop(m) map_drop_(&(m)->_map)
+#define map_drop(m) map_drop_(&(m)->_map.hdr)
 
 #define map_len(m) ((m)->len)
 #define map_keys(m) \
     ((__typeof(m->_phantom.k))MAP_MATCH_( \
         *m->_phantom.k, *m->_phantom.v, map_keys_, m, *m->_phantom.k, , , ))
 
-#define map_put(m, key, val, old_val) __extension__ ({ \
-    map_assert_compatible_(m, key, val, *old_val); \
-    MAP_MATCH_(key, val, map_put_, m, key, val, old_val, __COUNTER__); \
-})
+#define map_has(m, key) map_get(m, key, NULL)
+#define map_put(m, key, val) map_rep(m, key, val, NULL)
 #define map_get(m, key, val) __extension__ ({ \
     map_assert_compatible_(m, key, *val, *val); \
     MAP_MATCH_(key, *m->_phantom.v, map_get_, m, key, val, __COUNTER__, ); \
 })
-#define map_del(m, key, old_val) __extension__ ({ \
+#define map_del(m, key) map_rem(m, key, NULL)
+#define map_rep(m, key, val, old_val) __extension__ ({ \
+    map_assert_compatible_(m, key, val, *old_val); \
+    MAP_MATCH_(key, val, map_rep_, m, key, val, old_val, __COUNTER__); \
+})
+#define map_rem(m, key, old_val) __extension__ ({ \
     map_assert_compatible_(m, key, *old_val, *old_val); \
-    MAP_MATCH_(key, *m->_phantom.v, map_del_, m, key, old_val, __COUNTER_, ); \
+    MAP_MATCH_(key, *m->_phantom.v, map_rem_, m, key, old_val, __COUNTER_, ); \
 })
 
 /* ---------------------------- Implementation ---------------------------- */
@@ -129,7 +127,7 @@ typedef uint64_t map_k64_;
 typedef struct map_hdr_ {
     size_t len;
     unsigned char *bkts;
-    size_t bktlen, bktcap, sizeidx;
+    size_t used, cap, sizeidx;
 } map_hdr_;
 
 typedef enum map_bkt_state_ {
@@ -144,6 +142,7 @@ typedef enum map_bkt_state_ {
         K key; \
         V val; \
         map_bkt_state_ state; \
+        uint32_t hash; \
     } map_bkt_(K, V);
 MAP_ALL_(MAP_BKT_DECL_, )
 
@@ -155,7 +154,7 @@ MAP_ALL_(MAP_BKT_DECL_, )
     typedef struct map_(K, V) { \
         size_t len; \
         map_bkt_(K, V) *bkts; \
-        size_t bktlen, bktcap, sizeidx; \
+        size_t used, cap, sizeidx; \
     } map_(K, V);
 MAP_ALL_(MAP_DECL_, )
 
@@ -184,15 +183,8 @@ typedef union map_ {
 #define map_keys_(K, V, m, key_, val_, a_, b_) \
     map_keys_##K##_##V##_(&(m)->_map.K##_##V##_)
 
-#define map_put_(K, V, m, key, val, old_val, id) \
-    map_put_##K##_##V##_( \
-        &(m)->_map.K##_##V##_, \
-        cee_to_(K, key, id), \
-        cee_to_(V, val, id), \
-        (V *)old_val)
-
-#define map_put_(K, V, m, key, val, old_val, id) \
-    map_put_##K##_##V##_( \
+#define map_rep_(K, V, m, key, val, old_val, id) \
+    map_rep_##K##_##V##_( \
         &(m)->_map.K##_##V##_, \
         cee_to_(K, key, id), \
         cee_to_(V, val, id), \
@@ -204,18 +196,19 @@ typedef union map_ {
         cee_to_(K, key, id), \
         (V *)val)
 
-#define map_del_(K, V, m, key, old_val, id, b_) \
-    map_del_##K##_##V##_( \
+#define map_rem_(K, V, m, key, old_val, id, b_) \
+    map_rem_##K##_##V##_( \
         &(m)->_map.K##_##V##_, \
         cee_to_(K, key, id), \
         (V *)old_val)
 
 #define MAP_FN_DECL_(K, V, a_) \
     K *map_keys_##K##_##V##_(map_(K, V) *); \
-    bool map_put_##K##_##V##_(map_(K, V) *, K, V, V*); \
+    bool map_rep_##K##_##V##_(map_(K, V) *, K, V, V*); \
     bool map_get_##K##_##V##_(map_(K, V) *, K, V*); \
-    bool map_del_##K##_##V##_(map_(K, V) *, K, V*);
+    bool map_rem_##K##_##V##_(map_(K, V) *, K, V*);
 
-void *map_drop_(map_ *m);
+void *map_make_(size_t);
+void *map_drop_(map_hdr_ *m);
 MAP_ALL_(MAP_FN_DECL_, )
 #endif

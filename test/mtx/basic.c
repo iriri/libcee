@@ -1,5 +1,4 @@
 #include <assert.h>
-#include <unistd.h>
 #include <pthread.h>
 
 #include <cee/mtx.h>
@@ -30,4 +29,5 @@ main(void) {
         assert(pthread_join(pool[i], NULL) == 0);
     }
     assert(sum == LIM * THREADC);
+    return 0;
 }

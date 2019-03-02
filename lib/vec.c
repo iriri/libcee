@@ -67,7 +67,7 @@ vec_remove_(vec_ *v, size_t index, size_t eltsize) {
     }
     v->len--;
     cee_assert(index <= v->len);
-    if (index != v->len) {
+    if (index < v->len) {
         memmove(
             v->arr + (index * eltsize),
             v->arr + ((index + 1) * eltsize),

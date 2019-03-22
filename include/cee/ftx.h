@@ -16,8 +16,9 @@ typedef uint32_t ftx;
 #endif
 
 int ftx_wait(_Atomic ftx *, ftx);
-int ftx_timedwait(_Atomic ftx *, ftx, struct timespec *);
+int ftx_timedwait(_Atomic ftx *, ftx, const struct timespec *);
 void ftx_wake(_Atomic ftx *);
 void ftx_wakeall(_Atomic ftx *);
 struct timespec ftx_rel_to_abs(uint64_t);
+int ftx_backoff(int);
 #endif

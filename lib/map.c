@@ -7,17 +7,17 @@
 
 /* Everything past 29 is shamelessly stolen from "good hash table primes" by
  * akrowne on PlanetMath. */
-static const size_t map_sizes_[] = {
+static const size_t primes[] = {
     29, 53, 97, 193, 389, 769, 1543, 3079, 6151, 12289, 24593, 49157, 98317,
     196613, 393241, 786433, 1572869, 3145739, 6291469, 12582917, 25165843,
     50331653, 100663319, 201326611, 402653189, 805306457, 1610612741
 };
-const size_t MAP_SIZESLEN_ = sizeof(map_sizes_) / sizeof(map_sizes_[0]);
+static const size_t PRIMESLEN = sizeof(primes) / sizeof(primes[0]);
 
 void *
 map_make_(size_t bktsize) {
     map_hdr_ *m = malloc(sizeof(*m));
-    *m = (map_hdr_){0, calloc(map_sizes_[0], bktsize), 0, map_sizes_[0], 0};
+    *m = (map_hdr_){0, calloc(primes[0], bktsize), 0, primes[0], 0};
     return m;
 }
 
@@ -28,9 +28,9 @@ map_drop_(map_hdr_ *m) {
     return NULL;
 }
 
-/* DJBX33X because I'm lazy. Replace with Murmur3 or SipHash or w/e. */
+/* DJBX33X because I'm lazy. Replace with Murmur3 or w/e. Or not b/c icache? */
 static uint32_t
-map_hash_(unsigned char *buf, size_t size) {
+djbx33x(const unsigned char *buf, size_t size) {
     uint32_t hash = 5381;
     for (size_t i = 0; i < size; i++) {
         hash = (hash * 33) ^ buf[i];
@@ -38,33 +38,33 @@ map_hash_(unsigned char *buf, size_t size) {
     return hash;
 }
 
-#define map_amp_(a) (&a)
-#define map_amp_str_(a) (a)
+#define amp(a) (&a)
+#define amp_str(a) (a)
 
-#define map_size_(a) (sizeof(a))
-#define map_size_str_(a) (strlen(a))
+#define size(a) (sizeof(a))
+#define size_str(a) (strlen(a))
 
-#define map_eq_(a, b) ((a) == (b))
-#define map_eq_str_(a, b) (strcmp(a, b) == 0)
+#define eq(a, b) ((a) == (b))
+#define eq_str(a, b) (strcmp(a, b) == 0)
 
-#define MAP_ALL_IMPL_(f) \
-    f(map_kstr_, cee_u32_, map_amp_str_, map_size_str_, map_eq_str_) \
-    f(map_kstr_, cee_u64_, map_amp_str_, map_size_str_, map_eq_str_) \
-    f(map_kstr_, cee_u128_, map_amp_str_, map_size_str_, map_eq_str_) \
-    f(map_kstr_, cee_u192_, map_amp_str_, map_size_str_, map_eq_str_) \
-    f(map_kstr_, cee_u256_, map_amp_str_, map_size_str_, map_eq_str_) \
-    f(map_k32_, cee_u32_, map_amp_, map_size_, map_eq_) \
-    f(map_k32_, cee_u64_, map_amp_, map_size_, map_eq_) \
-    f(map_k32_, cee_u128_, map_amp_, map_size_, map_eq_) \
-    f(map_k32_, cee_u192_, map_amp_, map_size_, map_eq_) \
-    f(map_k32_, cee_u256_, map_amp_, map_size_, map_eq_) \
-    f(map_k64_, cee_u32_, map_amp_, map_size_, map_eq_) \
-    f(map_k64_, cee_u64_, map_amp_, map_size_, map_eq_) \
-    f(map_k64_, cee_u128_, map_amp_, map_size_, map_eq_) \
-    f(map_k64_, cee_u192_, map_amp_, map_size_, map_eq_) \
-    f(map_k64_, cee_u256_, map_amp_, map_size_, map_eq_)
+#define DEF_ALL(f) \
+    f(map_kstr_, cee_u32_, amp_str, size_str, eq_str) \
+    f(map_kstr_, cee_u64_, amp_str, size_str, eq_str) \
+    f(map_kstr_, cee_u128_, amp_str, size_str, eq_str) \
+    f(map_kstr_, cee_u192_, amp_str, size_str, eq_str) \
+    f(map_kstr_, cee_u256_, amp_str, size_str, eq_str) \
+    f(map_k32_, cee_u32_, amp, size, eq) \
+    f(map_k32_, cee_u64_, amp, size, eq) \
+    f(map_k32_, cee_u128_, amp, size, eq) \
+    f(map_k32_, cee_u192_, amp, size, eq) \
+    f(map_k32_, cee_u256_, amp, size, eq) \
+    f(map_k64_, cee_u32_, amp, size, eq) \
+    f(map_k64_, cee_u64_, amp, size, eq) \
+    f(map_k64_, cee_u128_, amp, size, eq) \
+    f(map_k64_, cee_u192_, amp, size, eq) \
+    f(map_k64_, cee_u256_, amp, size, eq)
 
-#define MAP_KEYS_DECL_(K, V, amp, size, eq) \
+#define MAP_KEYS_DECL(K, V, amp, size, eq) \
     K * \
     map_keys_##K##_##V##_(map_(K, V) *m) { \
         K *keys = malloc(m->len * sizeof(*keys)); \
@@ -77,13 +77,13 @@ map_hash_(unsigned char *buf, size_t size) {
         } \
         return keys; \
     }
-MAP_ALL_IMPL_(MAP_KEYS_DECL_)
+DEF_ALL(MAP_KEYS_DECL)
 
-#define MAP_RESIZE_DECL_(K, V, amp, size, eq_) \
+#define RESIZE_DECL(K, V, amp_, size_, eq_) \
     static void \
-    map_resize_##K##_##V##_(map_(K, V) *m, size_t sizeidx) { \
-        cee_assert(sizeidx < MAP_SIZESLEN_); \
-        size_t cap = map_sizes_[sizeidx]; \
+    resize_##K##_##V(map_(K, V) *m, size_t sizeidx) { \
+        cee_assert(sizeidx < PRIMESLEN); \
+        size_t cap = primes[sizeidx]; \
         map_bkt_(K, V) *bkts = calloc(cap, sizeof(*bkts)); \
         for (size_t i = 0; i < m->cap; i++) { \
             if (m->bkts[i].state == MAP_BKT_FULL_) { \
@@ -103,23 +103,28 @@ MAP_ALL_IMPL_(MAP_KEYS_DECL_)
         free(m->bkts); \
         *m = (map_(K, V)){m->len, bkts, m->len, cap, sizeidx}; \
     }
-MAP_ALL_IMPL_(MAP_RESIZE_DECL_)
+DEF_ALL(RESIZE_DECL)
 
 /* Linear probing because I'm lazy. Replace with robin hood hashing or w/e. */
-#define MAP_REP_DECL_(K, V, amp, size, eq) \
+#define MAP_REP_DECL(K, V, amp, size, eq) \
     bool \
     map_rep_##K##_##V##_(map_(K, V) *m, K key, V val, V *old_val) { \
         if ((double)m->used / m->cap > 0.75) {\
-            map_resize_##K##_##V##_( \
+            resize_##K##_##V( \
                 m, m->sizeidx + ((double)m->len / m->cap > 0.3 ? 1 : 0)); \
         } \
-        uint32_t hash = map_hash_((unsigned char *)amp(key), size(key)); \
+        uint32_t hash = djbx33x((unsigned char *)amp(key), size(key)); \
+        size_t putidx = SIZE_MAX; \
         for (size_t i = hash % m->cap; ; i = (i + 1) % m->cap) { \
             switch (m->bkts[i].state) { \
             case MAP_BKT_EMPTY_: \
-                m->bkts[i] = (map_bkt_(K, V)){key, val, MAP_BKT_FULL_, hash}; \
+                if (putidx == SIZE_MAX) { \
+                    putidx = i; \
+                    m->used++; \
+                } \
+                m->bkts[putidx] = \
+                    (map_bkt_(K, V)){key, val, MAP_BKT_FULL_, hash}; \
                 m->len++; \
-                m->used++; \
                 return false; \
             case MAP_BKT_FULL_: \
                 if (eq(key, m->bkts[i].key)) { \
@@ -130,17 +135,21 @@ MAP_ALL_IMPL_(MAP_RESIZE_DECL_)
                         (map_bkt_(K, V)){key, val, MAP_BKT_FULL_, hash}; \
                     m->used++; \
                     return true; \
-                } /* fallthrough */\
-            case MAP_BKT_TOMB_: break; \
+                } \
+                break; \
+            case MAP_BKT_TOMB_: \
+                if (putidx == SIZE_MAX) { \
+                    putidx = i; \
+                } \
             } \
         } \
     }
-MAP_ALL_IMPL_(MAP_REP_DECL_)
+DEF_ALL(MAP_REP_DECL)
 
-#define MAP_GET_DECL_(K, V, amp, size, eq) \
+#define MAP_GET_DECL(K, V, amp, size, eq) \
     bool \
     map_get_##K##_##V##_(map_(K, V) *m, K key, V *val) { \
-        uint32_t hash = map_hash_((unsigned char *)amp(key), size(key)); \
+        uint32_t hash = djbx33x((unsigned char *)amp(key), size(key)); \
         for (size_t i = hash % m->cap; ; i = (i + 1) % m->cap) { \
             switch (m->bkts[i].state) { \
             case MAP_BKT_EMPTY_: \
@@ -156,12 +165,12 @@ MAP_ALL_IMPL_(MAP_REP_DECL_)
             } \
         } \
     }
-MAP_ALL_IMPL_(MAP_GET_DECL_)
+DEF_ALL(MAP_GET_DECL)
 
-#define MAP_REM_DECL_(K, V, amp, size, eq) \
+#define MAP_REM_DECL(K, V, amp, size, eq) \
     bool \
     map_rem_##K##_##V##_(map_(K, V) *m, K key, V *old_val) { \
-        uint32_t hash = map_hash_((unsigned char *)amp(key), size(key)); \
+        uint32_t hash = djbx33x((unsigned char *)amp(key), size(key)); \
         for (size_t i = hash % m->cap; ; i = (i + 1) % m->cap) { \
             switch (m->bkts[i].state) { \
             case MAP_BKT_EMPTY_: \
@@ -174,7 +183,7 @@ MAP_ALL_IMPL_(MAP_GET_DECL_)
                     } \
                     m->len--; \
                     if ((double)m->len / m->cap < 0.1 && m->sizeidx > 0) { \
-                        map_resize_##K##_##V##_(m, m->sizeidx - 1); \
+                        resize_##K##_##V(m, m->sizeidx - 1); \
                     } \
                     return true; \
                 } /* fallthrough */ \
@@ -183,4 +192,4 @@ MAP_ALL_IMPL_(MAP_GET_DECL_)
         } \
         return true; \
     }
-MAP_ALL_IMPL_(MAP_REM_DECL_)
+DEF_ALL(MAP_REM_DECL)

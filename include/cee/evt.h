@@ -14,6 +14,6 @@ typedef struct evt {
 
 void evt_wait(evt *);
 bool evt_trywait(evt *);
-bool evt_timedwait(evt *, struct timespec *);
+bool evt_timedwait(evt *, const struct timespec *);
 void evt_post(evt *);
 #endif

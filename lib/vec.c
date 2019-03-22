@@ -49,7 +49,7 @@ vec_grow_(vec_ *v, size_t eltsize) {
 }
 
 void
-vec_concat_(vec_ *v, const vec_ v1, size_t eltsize) {
+vec_concat_(vec_ *v, vec_ v1, size_t eltsize) {
     if (v->len + v1.len > v->cap) {
         size_t g = v->cap > v1.cap ? v->cap : v1.cap;
         cee_assert(

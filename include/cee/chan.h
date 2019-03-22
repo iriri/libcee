@@ -1,9 +1,10 @@
 #ifndef CEE_CHAN_H
 #define CEE_CHAN_H
+#include <limits.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <string.h>
+#include <stdlib.h>
 
 #include <cee/cee.h>
 #include <cee/mtx.h>
@@ -19,13 +20,13 @@
     P_DEF(T); \
     CHAN_DEF(p(T))
 
-typedef struct chan_set chan_set;
-
 __extension__ typedef enum chan_rc {
     CHAN_OK,
     CHAN_WBLOCK = SIZE_MAX - 1,
     CHAN_CLOSED,
 } chan_rc;
+
+typedef struct chan_case chan_case;
 
 typedef enum chan_op {
     CHAN_NOOP,
@@ -34,8 +35,8 @@ typedef enum chan_op {
 } chan_op;
 
 #define chan_make(T, cap) __extension__ ({ \
-    _Static_assert( \
-        CHAN_ALL_(chan_check_msgsize_, T) false, "unsupported message size"); \
+    _Static_assert(CHAN_DEF_ALL_( \
+        chan_check_msgsize_, T) false, "unsupported message size"); \
     (chan(T) *)chan_make_(sizeof(T), cap, chan_cellsize_(T)); \
 })
 #define chan_dup(c) chan_dup_(c, __COUNTER__)
@@ -59,43 +60,19 @@ typedef enum chan_op {
     CHAN_MATCH_(*msg, chan_timedrecv_, c, msg, timeout, ); \
 })
 
-#define chan_set_make(cap) chan_set_make_(cap)
-#define chan_set_drop(set) chan_set_drop_(set)
-#define chan_set_add(set, c, op, msg) __extension__ ({ \
+#define chan_case(c, op, msg) __extension__ ({ \
     chan_assert_compatible_(c, *msg); \
-    chan_set_add_(set, &(c)->_chan, op, msg, chan_sel_fns_(msg)); \
+    (chan_case){&(c)->_chan, msg, chan_select_fns_(msg), op}; \
 })
-#define chan_set_rereg(set, id, op, msg) ( \
-    chan_assert_compatible_(c, *msg); \
-    chan_set_rereg_(set, id, op, msg) \
-)
 
-#define chan_select(set) chan_select_(set, UINT64_MAX)
-#define chan_tryselect(set) chan_select_(set, 0)
-#define chan_timedselect(set, timeout) chan_select_(set, timeout)
-
-#define chan_poll(casec) if (1) { \
-    bool Xdone_ = false; \
-    switch (rand() % casec) { \
-    for ( ; ; Xdone_ = true)
-#define chan_case(id, fn, ...) \
-    /* fallthrough */ \
-    case id: \
-        if (fn == CHAN_OK) { \
-            __VA_ARGS__; \
-            break; \
-        } else (void)0
-#define chan_default(...) \
-        if (Xdone_) { \
-            __VA_ARGS__; \
-            break; \
-        } else (void)0
-#define chan_poll_end } } else (void)0
+#define chan_select(cases, len) chan_select_(cases, len, 0)
+#define chan_tryselect(cases, len) chan_tryselect_(cases, len, rand())
+#define chan_timedselect(cases, len, timeout) chan_select_(cases, len, timeout)
 
 /* ---------------------------- Implementation ---------------------------- */
 #define chan_paste_(T) chan_##T##_
 
-#define CHAN_ALL_(f, a) \
+#define CHAN_DEF_ALL_(f, a) \
     f(cee_u32_, a) \
     f(cee_u64_, a) \
     f(cee_u128_, a) \
@@ -156,7 +133,7 @@ typedef union chan_un64_ {
         _Atomic uint32_t lap; \
         T msg; \
     } chan_cell_(T);
-CHAN_ALL_(CHAN_CELL_DECL_, )
+CHAN_DEF_ALL_(CHAN_CELL_DECL_, )
 
 #define chan_cellsize__(T, c_, msg_, a_, b_) sizeof(chan_cell_(T))
 #define chan_cellsize_(T) (CHAN_MATCH_(T, chan_cellsize__, , , , ))
@@ -175,22 +152,27 @@ CHAN_ALL_(CHAN_CELL_DECL_, )
         const unsigned char pad2[64 - sizeof(chan_aun64_)]; \
         chan_cell_(T) buf[]; \
     } chan_buf_(T);
-CHAN_ALL_(CHAN_BUF_DECL_, )
+CHAN_DEF_ALL_(CHAN_BUF_DECL_, )
 
 #define CHAN_BUF_MEMB_(T, a_) chan_buf_(T) buf_##T##_;
 
 typedef union chan_ {
     chan_hdr_ hdr;
     chan_unbuf_ unbuf;
-    CHAN_ALL_(CHAN_BUF_MEMB_, )
+    CHAN_DEF_ALL_(CHAN_BUF_MEMB_, )
 } chan_;
 
-typedef struct chan_case_ chan_case_;
-
 typedef struct chan_select_fns_ {
-    chan_rc (*try)(chan_case_ *cc);
+    chan_rc (*try)(const chan_case *cc);
     bool (*check)(chan_ *c, chan_op op);
 } chan_select_fns_;
+
+struct chan_case {
+    chan_ *c;
+    void *msg;
+    chan_select_fns_ fns;
+    chan_op op;
+};
 
 #define chan_check_msgsize_(T, T1) sizeof(T) == sizeof(T1) ||
 #define chan_assert_compatible_(c, msg) \
@@ -234,9 +216,9 @@ typedef struct chan_select_fns_ {
     cee_sym_(c_, id); \
 })
 
-#define chan_sel_fns__(T, c_, msg_, a_, b_) \
+#define chan_select_fns__(T, c_, msg_, a_, b_) \
     (chan_select_fns_){chan_select_try_##T##_, chan_select_check_##T##_}
-#define chan_sel_fns_(msg) (CHAN_MATCH_(msg, chan_sel_fns__, , , , ))
+#define chan_select_fns_(msg) (CHAN_MATCH_(msg, chan_select_fns__, , , , ))
 
 #define CHAN_FN_DECL_(T, a_) \
     chan_rc chan_send_##T##_(chan_ *, T); \
@@ -245,16 +227,13 @@ typedef struct chan_select_fns_ {
     chan_rc chan_tryrecv_##T##_(chan_ *, void *); \
     chan_rc chan_timedsend_##T##_(chan_ *, T, uint64_t); \
     chan_rc chan_timedrecv_##T##_(chan_ *, void *, uint64_t); \
-    chan_rc chan_select_try_##T##_(chan_case_ *cc); \
+    chan_rc chan_select_try_##T##_(const chan_case *cc); \
     bool chan_select_check_##T##_(chan_ *c, chan_op op);
 
 void *chan_make_(uint32_t, size_t, size_t);
 void *chan_drop_(chan_ *);
 void *chan_close_(chan_ *);
-CHAN_ALL_(CHAN_FN_DECL_, )
-chan_set *chan_set_make_(size_t);
-chan_set *chan_set_drop_(chan_set *);
-size_t chan_set_add_(chan_set *, chan_ *, chan_op, void *, chan_select_fns_);
-void chan_set_rereg_(chan_set *, size_t, chan_op, void *);
-size_t chan_select_(chan_set *, uint64_t);
+CHAN_DEF_ALL_(CHAN_FN_DECL_, )
+size_t chan_select_(chan_case[static 1], size_t, uint64_t);
+size_t chan_tryselect_(chan_case[static 1], size_t, size_t);
 #endif

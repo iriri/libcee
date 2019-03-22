@@ -114,45 +114,40 @@ main(void) {
     assert(sum == ((100000ll * 100001ll)/2));
     c = chan_drop(c);
 
-    chan(int) *chanpool[THREADC];
+    chan(int) *cpool[THREADC];
     chan(p(chan(int))) *c3 = chan_make(p(chan(int)), 0);
     for (int i = 0; i < THREADC; i++) {
-        chanpool[i] = chan_make(int, 0);
+        cpool[i] = chan_make(int, 0);
         assert(pthread_create(pool + i, NULL, identity, c3) == 0);
-        assert(chan_send(c3, chanpool[i]) == CHAN_OK);
-        assert(chan_send(chanpool[i], i) == CHAN_OK);
+        assert(chan_send(c3, cpool[i]) == CHAN_OK);
+        assert(chan_send(cpool[i], i) == CHAN_OK);
     }
     int ir;
-    for (int i = 1; i <= 100; i++) {
-        chan_poll(THREADC) {
-            chan_case(0, chan_tryrecv(chanpool[0], &ir), assert(ir == 0));
-            chan_case(1, chan_tryrecv(chanpool[1], &ir), { // Also works
-                    printf("1, %d\n", ir);
-                    assert(ir == 1);
-            });
-            chan_case(2, chan_tryrecv(chanpool[2], &ir), assert(ir == 2));
-            chan_case(3, chan_tryrecv(chanpool[3], &ir), assert(ir == 3));
-            chan_case(4, chan_tryrecv(chanpool[4], &ir), assert(ir == 4));
-            chan_case(5, chan_tryrecv(chanpool[5], &ir), assert(ir == 5));
-            chan_case(6, chan_tryrecv(chanpool[6], &ir), assert(ir == 6));
-            chan_case(7, chan_tryrecv(chanpool[7], &ir), assert(ir == 7));
-            chan_case(8, chan_tryrecv(chanpool[8], &ir), assert(ir == 8));
-            chan_case(9, chan_tryrecv(chanpool[9], &ir), assert(ir == 9));
-            chan_case(10, chan_tryrecv(chanpool[10], &ir), assert(ir == 10));
-            chan_case(11, chan_tryrecv(chanpool[11], &ir), assert(ir == 11));
-            chan_case(12, chan_tryrecv(chanpool[12], &ir), assert(ir == 12));
-            chan_case(13, chan_tryrecv(chanpool[13], &ir), assert(ir == 13));
-            chan_case(14, chan_tryrecv(chanpool[14], &ir), assert(ir == 14));
-            chan_case(15, chan_tryrecv(chanpool[15], &ir), assert(ir == 15));
-            chan_default({
-                printf("default\n");
-            });
-        } chan_poll_end;
+    chan_case cases[THREADC] = {
+        chan_case(cpool[0], CHAN_RECV, &ir),
+        chan_case(cpool[1], CHAN_RECV, &ir),
+        chan_case(cpool[2], CHAN_RECV, &ir),
+        chan_case(cpool[3], CHAN_RECV, &ir),
+        chan_case(cpool[4], CHAN_RECV, &ir),
+        chan_case(cpool[5], CHAN_RECV, &ir),
+        chan_case(cpool[6], CHAN_RECV, &ir),
+        chan_case(cpool[7], CHAN_RECV, &ir),
+        chan_case(cpool[8], CHAN_RECV, &ir),
+        chan_case(cpool[9], CHAN_RECV, &ir),
+        chan_case(cpool[10], CHAN_RECV, &ir),
+        chan_case(cpool[11], CHAN_RECV, &ir),
+        chan_case(cpool[12], CHAN_RECV, &ir),
+        chan_case(cpool[13], CHAN_RECV, &ir),
+        chan_case(cpool[14], CHAN_RECV, &ir),
+        chan_case(cpool[15], CHAN_RECV, &ir),
+    };
+    for (int i = 1; i <= 10000; i++) {
+        assert(chan_select(cases, THREADC) == (unsigned)ir);
     }
     for (int i = 0; i < THREADC; i++) {
-        chan_close(chanpool[i]);
+        chan_close(cpool[i]);
         assert(pthread_join(pool[i], NULL) == 0);
-        chanpool[i] = chan_drop(chanpool[i]);
+        cpool[i] = chan_drop(cpool[i]);
     }
     c3 = chan_drop(c3);
 

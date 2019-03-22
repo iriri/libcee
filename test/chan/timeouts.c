@@ -93,21 +93,21 @@ main(void) {
     printf("%llu\n", sum);
     c = chan_drop(c);
 
-    chan(int) *chanpool[THREADC];
+    chan(int) *cpool[THREADC];
     chan(p(chan(int))) *c1 = chan_make(p(chan(int)), 0);
     int ir;
     int stats[THREADC] = {0};
-    chan_set *set = chan_set_make(THREADC);
+    chan_case cases[THREADC];
     for (int i = 0; i < THREADC; i++) {
-        chanpool[i] = chan_make(int, 0);
+        cpool[i] = chan_make(int, 0);
         assert(pthread_create(pool + i, NULL, identity, c1) == 0);
-        assert(chan_send(c1, chanpool[i]) == CHAN_OK);
-        assert(chan_send(chanpool[i], i) == CHAN_OK);
-        chan_set_add(set, chanpool[i], CHAN_RECV, &ir);
+        assert(chan_send(c1, cpool[i]) == CHAN_OK);
+        assert(chan_send(cpool[i], i) == CHAN_OK);
+        cases[i] = chan_case(cpool[i], CHAN_RECV, &ir);
     }
     ok = timedout = 0;
     for (int i = 1; i <= 10000; i++) {
-        size_t id = chan_timedselect(set, 100);
+        size_t id = chan_timedselect(cases, THREADC, 100);
         if (id != CHAN_WBLOCK) {
             ok++;
             assert((unsigned)ir == id);
@@ -116,11 +116,10 @@ main(void) {
             timedout++;
         }
     }
-    set = chan_set_drop(set);
     for (int i = 0; i < THREADC; i++) {
-        chan_close(chanpool[i]);
+        chan_close(cpool[i]);
         assert(pthread_join(pool[i], NULL) == 0);
-        chanpool[i] = chan_drop(chanpool[i]);
+        cpool[i] = chan_drop(cpool[i]);
         printf("%d: %d ", i, stats[i]);
     }
     c1 = chan_drop(c1);

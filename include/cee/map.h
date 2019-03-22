@@ -31,9 +31,9 @@
 
 #define map_make(K, V) __extension__ ({ \
     _Static_assert( \
-        MAP_ALL__(map_check_ksize_, K) false, "unsupported key size"); \
+        MAP_DEF_ALL__(map_check_ksize_, K) false, "unsupported key size"); \
     _Static_assert( \
-        MAP_ALL__(map_check_vsize_, V) false, "unsupported value size"); \
+        MAP_DEF_ALL__(map_check_vsize_, V) false, "unsupported value size"); \
     (map(K, V) *)map_make_(map_bktsize_(K, V)); \
 })
 #define map_drop(m) map_drop_(&(m)->_map.hdr)
@@ -66,13 +66,13 @@ typedef char *map_kstr_;
 typedef uint32_t map_k32_;
 typedef uint64_t map_k64_;
 
-#define MAP_ALL__STR_(f, a) \
+#define MAP_DEF_ALL__STR_(f, a) \
     f(map_kstr_, cee_u32_, a) \
     f(map_kstr_, cee_u64_, a) \
     f(map_kstr_, cee_u128_, a) \
     f(map_kstr_, cee_u192_, a) \
     f(map_kstr_, cee_u256_, a)
-#define MAP_ALL__(f, a) \
+#define MAP_DEF_ALL__(f, a) \
     f(map_k32_, cee_u32_, a) \
     f(map_k32_, cee_u64_, a) \
     f(map_k32_, cee_u128_, a) \
@@ -83,9 +83,9 @@ typedef uint64_t map_k64_;
     f(map_k64_, cee_u128_, a) \
     f(map_k64_, cee_u192_, a) \
     f(map_k64_, cee_u256_, a)
-#define MAP_ALL_(f, a) \
-    MAP_ALL__STR_(f, a) \
-    MAP_ALL__(f, a)
+#define MAP_DEF_ALL_(f, a) \
+    MAP_DEF_ALL__STR_(f, a) \
+    MAP_DEF_ALL__(f, a)
 #define MAP_MATCH__STR_(l1, r, m, key, val, a, b) \
     __builtin_choose_expr(sizeof(l1) == sizeof(cee_u32_), \
         r(map_kstr_, cee_u32_, m, key, val, a, b), \
@@ -144,7 +144,7 @@ typedef enum map_bkt_state_ {
         map_bkt_state_ state; \
         uint32_t hash; \
     } map_bkt_(K, V);
-MAP_ALL_(MAP_BKT_DECL_, )
+MAP_DEF_ALL_(MAP_BKT_DECL_, )
 
 #define map_bktsize__(K, V, m_, key_, val_, a_, b_) sizeof(map_bkt_(K, V))
 #define map_bktsize_(K, V) (MAP_MATCH__(K, V, map_bktsize__, , , , , ))
@@ -156,13 +156,13 @@ MAP_ALL_(MAP_BKT_DECL_, )
         map_bkt_(K, V) *bkts; \
         size_t used, cap, sizeidx; \
     } map_(K, V);
-MAP_ALL_(MAP_DECL_, )
+MAP_DEF_ALL_(MAP_DECL_, )
 
 #define MAP_MEMB_(K, V, a_) map_(K, V) K##_##V##_;
 
 typedef union map_ {
     map_hdr_ hdr;
-    MAP_ALL_(MAP_MEMB_, )
+    MAP_DEF_ALL_(MAP_MEMB_, )
 } map_;
 
 #define map_check_ksize_(K, V, K1) sizeof(K) == sizeof(K1) ||
@@ -204,11 +204,11 @@ typedef union map_ {
 
 #define MAP_FN_DECL_(K, V, a_) \
     K *map_keys_##K##_##V##_(map_(K, V) *); \
-    bool map_rep_##K##_##V##_(map_(K, V) *, K, V, V*); \
-    bool map_get_##K##_##V##_(map_(K, V) *, K, V*); \
-    bool map_rem_##K##_##V##_(map_(K, V) *, K, V*);
+    bool map_rep_##K##_##V##_(map_(K, V) *, K, V, V *); \
+    bool map_get_##K##_##V##_(map_(K, V) *, K, V *); \
+    bool map_rem_##K##_##V##_(map_(K, V) *, K, V *);
 
 void *map_make_(size_t);
 void *map_drop_(map_hdr_ *m);
-MAP_ALL_(MAP_FN_DECL_, )
+MAP_DEF_ALL_(MAP_FN_DECL_, )
 #endif

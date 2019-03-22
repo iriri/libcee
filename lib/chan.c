@@ -3,7 +3,6 @@
  *
  * The implementations of sending, receiving, and selection are based on
  * algorithms described in "Go channels on steroids" by Dmitry Vyukov. */
-#include <errno.h>
 #include <sched.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -13,63 +12,45 @@
 #include <cee/cee.h>
 #include <cee/evt.h>
 #include <cee/mtx.h>
-#include <cee/vec.h>
 #include <cee/xops.h>
 
 #include <cee/chan.h>
 
-typedef struct chan_waiter_hdr_ {
+typedef struct waiter_hdr {
     union chan_waiter_ *next, *prev;
     evt *trg;
     _Atomic size_t *sel_state;
     size_t sel_id;
     _Atomic bool ref;
-} chan_waiter_hdr_;
+} waiter_hdr;
 
-/* Buffered waiters currently only use the fields in the shared header. */
-typedef struct chan_waiter_hdr_ chan_waiter_buf_;
+typedef struct waiter_hdr waiter_buf;
 
-typedef struct chan_waiter_unbuf_ {
-    struct chan_waiter_unbuf_ *next, *prev;
+typedef struct waiter_unbuf {
+    struct waiter_unbuf *next, *prev;
     evt *trg;
     _Atomic size_t *sel_state;
     size_t sel_id;
     _Atomic bool ref;
     void *msg;
     bool closed;
-} chan_waiter_unbuf_;
+} waiter_unbuf;
 
 typedef union chan_waiter_ {
     chan_waiter_root_ root;
-    chan_waiter_hdr_ hdr;
-    chan_waiter_buf_ buf;
-    chan_waiter_unbuf_ unbuf;
-} chan_waiter_;
+    waiter_hdr hdr;
+    waiter_buf buf;
+    waiter_unbuf unbuf;
+} waiter;
 
-/* This has gotten kind of bloated... */
-struct chan_case_ {
-    chan_ *c;
-    void *msg;
-    chan_select_fns_ fns;
-    chan_op op;
-    chan_waiter_ waiter;
-};
+typedef enum select_rc {
+    SELECT_READY,
+    SELECT_WAIT,
+    SELECT_CLOSED,
+} select_rc;
 
-VEC_DEF(chan_case_);
-
-struct chan_set {
-    vec(chan_case_) cases;
-    evt trg;
-};
-
-typedef enum chan_select_rc_ {
-    CHAN_SEL_RC_READY_,
-    CHAN_SEL_RC_WAIT_,
-    CHAN_SEL_RC_CLOSED_,
-} chan_select_rc_;
-
-const size_t CHAN_SEL_NIL_ = CHAN_WBLOCK;
-const size_t CHAN_SEL_MAGIC_ = CHAN_CLOSED;
+static const size_t SELECT_NIL = CHAN_WBLOCK;
+static const size_t SELECT_MAGIC = CHAN_CLOSED;
 
 void *
 chan_make_(uint32_t msgsize, size_t cap, size_t cellsize) {
@@ -86,10 +67,10 @@ chan_make_(uint32_t msgsize, size_t cap, size_t cellsize) {
     }
     xset_rlx(&c->hdr.openc, 1);
     xset_rlx(&c->hdr.refc, 1);
-    xset_rlx(&c->hdr.sendq.next, (chan_waiter_ *)&c->hdr.sendq);
-    xset_rlx(&c->hdr.sendq.prev, (chan_waiter_ *)&c->hdr.sendq);
-    xset_rlx(&c->hdr.recvq.next, (chan_waiter_ *)&c->hdr.recvq);
-    xset_rlx(&c->hdr.recvq.prev, (chan_waiter_ *)&c->hdr.recvq);
+    xset_rlx(&c->hdr.sendq.next, (waiter *)&c->hdr.sendq);
+    xset_rlx(&c->hdr.sendq.prev, (waiter *)&c->hdr.sendq);
+    xset_rlx(&c->hdr.recvq.next, (waiter *)&c->hdr.recvq);
+    xset_rlx(&c->hdr.recvq.prev, (waiter *)&c->hdr.recvq);
     return c;
 }
 
@@ -106,28 +87,28 @@ chan_drop_(chan_ *c) {
 }
 
 static void
-chan_waitq_push_(chan_waiter_root_ *waitq, chan_waiter_ *w) {
-    w->hdr.next = (chan_waiter_ *)waitq;
+waitq_push(chan_waiter_root_ *waitq, waiter *w) {
+    w->hdr.next = (waiter *)waitq;
     w->hdr.prev = xget_rlx(&waitq->prev);
     xset_seq(&xget_rlx(&waitq->prev)->root.next, w);
     xset_rlx(&waitq->prev, w);
 }
 
-static chan_waiter_ *
-chan_waitq_shift_(chan_waiter_root_ *waitq) {
-    chan_waiter_ *w = xget_rlx(&waitq->next);
+static waiter *
+waitq_shift(chan_waiter_root_ *waitq) {
+    waiter *w = xget_rlx(&waitq->next);
     if (&w->root == waitq) {
         return NULL;
     }
     xset_seq(&w->hdr.prev->root.next, w->hdr.next);
     xset_rlx(&w->hdr.next->root.prev, w->hdr.prev);
-    w->hdr.prev = NULL; // For chan_waitq_remove
+    w->hdr.prev = NULL; // For waitq_remove
     xset_rlx(&w->hdr.ref, true);
     return w;
 }
 
 static bool
-chan_waitq_remove_(chan_waiter_ *w) {
+waitq_remove(waiter *w) {
     if (!w->hdr.prev) { // Already shifted off the front
         return false;
     }
@@ -143,23 +124,23 @@ chan_close_(chan_ *c) {
     case 1:
         mtx_lock(&c->hdr.lock);
         if (c->hdr.cap > 0) {
-            chan_waiter_buf_ *w;
+            waiter_buf *w;
             /* UBSan complains about union member accesses when the pointer is
              * `NULL` but I don't think I care since we aren't actually
              * dereferencing the pointer. */
-            while ((w = &chan_waitq_shift_(&c->hdr.sendq)->buf)) {
+            while ((w = &waitq_shift(&c->hdr.sendq)->buf)) {
                 evt_post(w->trg);
             }
-            while ((w = &chan_waitq_shift_(&c->hdr.recvq)->buf)) {
+            while ((w = &waitq_shift(&c->hdr.recvq)->buf)) {
                 evt_post(w->trg);
             }
         } else {
-            chan_waiter_unbuf_ *w;
-            while ((w = &chan_waitq_shift_(&c->unbuf.sendq)->unbuf)) {
+            waiter_unbuf *w;
+            while ((w = &waitq_shift(&c->unbuf.sendq)->unbuf)) {
                 w->closed = true;
                 evt_post(w->trg);
             }
-            while ((w = &chan_waitq_shift_(&c->unbuf.recvq)->unbuf)) {
+            while ((w = &waitq_shift(&c->unbuf.recvq)->unbuf)) {
                 w->closed = true;
                 evt_post(w->trg);
             }
@@ -170,14 +151,14 @@ chan_close_(chan_ *c) {
 }
 
 static void
-chan_buf_waitq_shift_(chan_waiter_root_ *waitq, mtx *lock) {
+buf_waitq_shift(chan_waiter_root_ *waitq, mtx *lock) {
     while (&xget_seq(&waitq->next)->root != waitq) {
         mtx_lock(lock);
-        chan_waiter_buf_ *w = &chan_waitq_shift_(waitq)->buf;
+        waiter_buf *w = &waitq_shift(waitq)->buf;
         mtx_unlock(lock);
         if (w) {
             if (w->sel_state) {
-                size_t magic = CHAN_SEL_MAGIC_;
+                size_t magic = SELECT_MAGIC;
                 if (!xcas_s_acr_rlx(w->sel_state, &magic, w->sel_id)) {
                     xset_rel(&w->ref, false);
                     continue;
@@ -189,9 +170,9 @@ chan_buf_waitq_shift_(chan_waiter_root_ *waitq, mtx *lock) {
     }
 }
 
-#define CHAN_BUF_TRYOP_DECL_(T, a_) \
+#define BUF_TRYOP_DECL(T, a_) \
     static chan_rc \
-    chan_buf_trysend_##T##_(chan_buf_(T) *c, T msg) { \
+    buf_trysend##T(chan_buf_(T) *c, T msg) { \
         if (xget_acq(&c->openc) > 0) { \
             int i = 0; \
             chan_un64_ write = {xget_acq(&c->write.u64)}; \
@@ -200,13 +181,13 @@ chan_buf_waitq_shift_(chan_waiter_root_ *waitq, mtx *lock) {
                 uint32_t lap = xget_acq(&cell->lap); \
                 if (write.lap == lap) { \
                     uint64_t write1 = write.idx + 1 < c->cap ? \
-                            write.u64 + 1 : (uint64_t)(write.lap + 2) << 32; \
+                        write.u64 + 1 : (uint64_t)(write.lap + 2) << 32; \
                     if (!xcas_w_seq_acq(&c->write.u64, &write.u64, write1)) { \
                         continue; \
                     } \
                     cell->msg = msg; \
                     xset_rel(&cell->lap, lap + 1); \
-                    chan_buf_waitq_shift_(&c->recvq, &c->lock); \
+                    buf_waitq_shift(&c->recvq, &c->lock); \
                     return CHAN_OK; \
                 } \
  \
@@ -223,20 +204,20 @@ chan_buf_waitq_shift_(chan_waiter_root_ *waitq, mtx *lock) {
     } \
  \
     static chan_rc \
-    chan_buf_tryrecv_##T##_(chan_buf_(T) *c, T *msg) { \
+    buf_tryrecv##T(chan_buf_(T) *c, T *msg) { \
         chan_un64_ read = {xget_acq(&c->read.u64)}; \
         for (int i = 0; ; ) { \
             chan_cell_(T) *cell = c->buf + read.idx; \
             uint32_t lap = xget_acq(&cell->lap); \
             if (read.lap == lap) { \
                 uint64_t read1 = read.idx + 1 < c->cap ? \
-                        read.u64 + 1 : (uint64_t)(read.lap + 2) << 32; \
+                    read.u64 + 1 : (uint64_t)(read.lap + 2) << 32; \
                 if (!xcas_w_seq_acq(&c->read.u64, &read.u64, read1)) { \
                     continue; \
                 } \
                 *msg = cell->msg; \
                 xset_rel(&cell->lap, lap + 1); \
-                chan_buf_waitq_shift_(&c->sendq, &c->lock); \
+                buf_waitq_shift(&c->sendq, &c->lock); \
                 return CHAN_OK; \
             } \
  \
@@ -252,10 +233,10 @@ chan_buf_waitq_shift_(chan_waiter_root_ *waitq, mtx *lock) {
             read.u64 = xget_acq(&c->read.u64); \
         } \
     }
-CHAN_ALL_(CHAN_BUF_TRYOP_DECL_, )
+CHAN_DEF_ALL_(BUF_TRYOP_DECL, )
 
 static chan_rc
-chan_unbuf_try_(chan_unbuf_ *c, void *msg, chan_waiter_root_ *waitq) {
+unbuf_try(chan_unbuf_ *c, void *msg, chan_waiter_root_ *waitq) {
     while (xget_acq(&c->openc) > 0) {
         if (&xget_acq(&waitq->next)->root == waitq) {
             return CHAN_WBLOCK;
@@ -266,13 +247,13 @@ chan_unbuf_try_(chan_unbuf_ *c, void *msg, chan_waiter_root_ *waitq) {
             mtx_unlock(&c->lock);
             return CHAN_CLOSED;
         }
-        chan_waiter_unbuf_ *w = &chan_waitq_shift_(waitq)->unbuf;
+        waiter_unbuf *w = &waitq_shift(waitq)->unbuf;
         mtx_unlock(&c->lock);
         if (!w) {
             return CHAN_WBLOCK;
         }
         if (w->sel_state) {
-            size_t magic = CHAN_SEL_MAGIC_;
+            size_t magic = SELECT_MAGIC;
             if (!xcas_s_acr_rlx(w->sel_state, &magic, w->sel_id)) {
                 xset_rel(&w->ref, false);
                 continue;
@@ -290,13 +271,11 @@ chan_unbuf_try_(chan_unbuf_ *c, void *msg, chan_waiter_root_ *waitq) {
     return CHAN_CLOSED;
 }
 
-#define CHAN_BUF_OP_OR_WAIT_DECL_(T, a_) \
+#define BUF_OP_OR_WAIT_DECL(T, a_) \
     static chan_rc \
-    chan_buf_send_or_wait_##T##_( \
-        chan_buf_(T) *c, T msg, chan_waiter_buf_ *w \
-    ) { \
+    buf_send_or_wait_##T(chan_buf_(T) *c, T msg, waiter_buf *w) { \
         for ( ; ; ) { \
-            chan_rc rc = chan_buf_trysend_##T##_(c, msg); \
+            chan_rc rc = buf_trysend##T(c, msg); \
             if (rc != CHAN_WBLOCK) { \
                 return rc; \
             } \
@@ -307,11 +286,11 @@ chan_unbuf_try_(chan_unbuf_ *c, void *msg, chan_waiter_root_ *waitq) {
                 return CHAN_CLOSED; \
             } \
             /* TODO: Casts are evil. Figure out how to get rid of these. */ \
-            chan_waitq_push_(&c->sendq, (chan_waiter_ *)w); \
+            waitq_push(&c->sendq, (waiter *)w); \
             chan_un64_ write = {xget_acq(&c->write.u64)}; \
             chan_cell_(T) *cell = c->buf + write.idx; \
             if (write.lap == xget_acq(&cell->lap)) { \
-                chan_waitq_remove_((chan_waiter_ *)w); \
+                waitq_remove((waiter *)w); \
                 mtx_unlock(&c->lock); \
                 continue; \
             } \
@@ -321,26 +300,24 @@ chan_unbuf_try_(chan_unbuf_ *c, void *msg, chan_waiter_root_ *waitq) {
     } \
  \
     static chan_rc \
-    chan_buf_recv_or_wait_##T##_( \
-        chan_buf_(T) *c, T *msg, chan_waiter_buf_ *w \
-    ) { \
+    buf_recv_or_wait_##T(chan_buf_(T) *c, T *msg, waiter_buf *w) { \
         for ( ; ; ) { \
-            chan_rc rc = chan_buf_tryrecv_##T##_(c, msg); \
+            chan_rc rc = buf_tryrecv##T(c, msg); \
             if (rc != CHAN_WBLOCK) { \
                 return rc; \
             } \
  \
             mtx_lock(&c->lock); \
-            chan_waitq_push_(&c->recvq, (chan_waiter_ *)w); \
+            waitq_push(&c->recvq, (waiter *)w); \
             chan_un64_ read = {xget_acq(&c->read.u64)}; \
             chan_cell_(T) *cell = c->buf + read.idx; \
             if (read.lap == xget_acq(&cell->lap)) { \
-                chan_waitq_remove_((chan_waiter_ *)w); \
+                waitq_remove((waiter *)w); \
                 mtx_unlock(&c->lock); \
                 continue; \
             } \
             if (xget_acq(&c->openc) == 0) { \
-                chan_waitq_remove_((chan_waiter_ *)w); \
+                waitq_remove((waiter *)w); \
                 mtx_unlock(&c->lock); \
                 return CHAN_CLOSED; \
             } \
@@ -348,15 +325,15 @@ chan_unbuf_try_(chan_unbuf_ *c, void *msg, chan_waiter_root_ *waitq) {
             return CHAN_WBLOCK; \
         } \
     }
-CHAN_ALL_(CHAN_BUF_OP_OR_WAIT_DECL_, )
+CHAN_DEF_ALL_(BUF_OP_OR_WAIT_DECL, )
 
-#define CHAN_BUF_OP_DECL_(T, a_) \
+#define BUF_OP_DECL(T, a_) \
     static chan_rc \
-    chan_buf_send_##T##_(chan_buf_(T) *c, T msg, struct timespec *timeout) { \
+    buf_send_##T(chan_buf_(T) *c, T msg, const struct timespec *timeout) { \
         evt trg = evt_make(); \
-        chan_waiter_buf_ w = {.trg = &trg, .sel_id = CHAN_SEL_NIL_}; \
+        waiter_buf w = {.trg = &trg, .sel_id = SELECT_NIL}; \
         for ( ; ; ) { \
-            chan_rc rc = chan_buf_send_or_wait_##T##_(c, msg, &w); \
+            chan_rc rc = buf_send_or_wait_##T(c, msg, &w); \
             if (rc != CHAN_WBLOCK) { \
                 return rc; \
             } \
@@ -365,11 +342,11 @@ CHAN_ALL_(CHAN_BUF_OP_OR_WAIT_DECL_, )
                 evt_wait(&trg); \
             } else if (!evt_timedwait(&trg, timeout)) { \
                 mtx_lock(&c->lock); \
-                bool onqueue = chan_waitq_remove_((chan_waiter_ *)&w); \
+                bool onqueue = waitq_remove((waiter *)&w); \
                 mtx_unlock(&c->lock); \
                 if (!onqueue) { \
                     evt_wait(w.trg); \
-                    chan_rc rc = chan_buf_trysend_##T##_(c, msg); \
+                    chan_rc rc = buf_trysend##T(c, msg); \
                     if (rc != CHAN_WBLOCK) { \
                         return rc; \
                     } \
@@ -380,11 +357,11 @@ CHAN_ALL_(CHAN_BUF_OP_OR_WAIT_DECL_, )
     } \
  \
     static chan_rc \
-    chan_buf_recv_##T##_(chan_buf_(T) *c, T *msg, struct timespec *timeout) { \
+    buf_recv_##T(chan_buf_(T) *c, T *msg, const struct timespec *timeout) { \
         evt trg = evt_make(); \
-        chan_waiter_buf_ w = {.trg = &trg, .sel_id = CHAN_SEL_NIL_}; \
+        waiter_buf w = {.trg = &trg, .sel_id = SELECT_NIL}; \
         for ( ; ; ) { \
-            chan_rc rc = chan_buf_recv_or_wait_##T##_(c, msg, &w); \
+            chan_rc rc = buf_recv_or_wait_##T(c, msg, &w); \
             if (rc != CHAN_WBLOCK) { \
                 return rc; \
             } \
@@ -393,11 +370,11 @@ CHAN_ALL_(CHAN_BUF_OP_OR_WAIT_DECL_, )
                 evt_wait(&trg); \
             } else if (!evt_timedwait(&trg, timeout)) { \
                 mtx_lock(&c->lock); \
-                bool onqueue = chan_waitq_remove_((chan_waiter_ *)&w); \
+                bool onqueue = waitq_remove((waiter *)&w); \
                 mtx_unlock(&c->lock); \
                 if (!onqueue) { \
                     evt_wait(w.trg); \
-                    chan_rc rc = chan_buf_tryrecv_##T##_(c, msg); \
+                    chan_rc rc = buf_tryrecv##T(c, msg); \
                     if (rc != CHAN_WBLOCK) { \
                         return rc; \
                     } \
@@ -406,12 +383,10 @@ CHAN_ALL_(CHAN_BUF_OP_OR_WAIT_DECL_, )
             } \
         } \
     }
-CHAN_ALL_(CHAN_BUF_OP_DECL_, )
+CHAN_DEF_ALL_(BUF_OP_DECL, )
 
 static chan_rc
-chan_unbuf_rendez_or_wait_(
-    chan_unbuf_ *c, void *msg, chan_waiter_unbuf_ *w, chan_op op
-) {
+unbuf_rendez_or_wait(chan_unbuf_ *c, void *msg, waiter_unbuf *w, chan_op op) {
     chan_waiter_root_ *shiftq, *pushq;
     if (op == CHAN_SEND) {
         shiftq = &c->recvq;
@@ -428,11 +403,11 @@ chan_unbuf_rendez_or_wait_(
             return CHAN_CLOSED;
         }
 
-        chan_waiter_unbuf_ *w1 = &chan_waitq_shift_(shiftq)->unbuf;
+        waiter_unbuf *w1 = &waitq_shift(shiftq)->unbuf;
         if (w1) {
             mtx_unlock(&c->lock);
             if (w1->sel_state) {
-                size_t magic = CHAN_SEL_MAGIC_;
+                size_t magic = SELECT_MAGIC;
                 if (!xcas_s_acr_rlx(w1->sel_state, &magic, w1->sel_id)) {
                     xset_rel(&w1->ref, false);
                     continue;
@@ -446,7 +421,7 @@ chan_unbuf_rendez_or_wait_(
             evt_post(w1->trg);
             return CHAN_OK;
         }
-        chan_waitq_push_(pushq, (chan_waiter_ *)w);
+        waitq_push(pushq, (waiter *)w);
         mtx_unlock(&c->lock);
         return CHAN_WBLOCK;
     }
@@ -454,12 +429,12 @@ chan_unbuf_rendez_or_wait_(
 }
 
 static chan_rc
-chan_unbuf_rendez_(
-    chan_unbuf_ *c, void *msg, struct timespec *timeout, chan_op op
+unbuf_rendez(
+    chan_unbuf_ *c, void *msg, const struct timespec *timeout, chan_op op
 ) {
     evt trg = evt_make();
-    chan_waiter_unbuf_ w = {.trg = &trg, .sel_id = CHAN_SEL_NIL_, .msg = msg};
-    chan_rc rc = chan_unbuf_rendez_or_wait_(c, msg, &w, op);
+    waiter_unbuf w = {.trg = &trg, .sel_id = SELECT_NIL, .msg = msg};
+    chan_rc rc = unbuf_rendez_or_wait(c, msg, &w, op);
     if (rc != CHAN_WBLOCK) {
         return rc;
     }
@@ -468,7 +443,7 @@ chan_unbuf_rendez_(
         evt_wait(&trg);
     } else if (!evt_timedwait(&trg, timeout)) {
         mtx_lock(&c->lock);
-        bool onqueue = chan_waitq_remove_((chan_waiter_ *)&w);
+        bool onqueue = waitq_remove((waiter *)&w);
         mtx_unlock(&c->lock);
         if (onqueue) {
             return CHAN_WBLOCK;
@@ -478,91 +453,59 @@ chan_unbuf_rendez_(
     return w.closed ? CHAN_CLOSED : CHAN_OK;
 }
 
-#define CHAN_OP_DECL_(T, a_) \
+#define CHAN_OP_DECL(T, a_) \
     chan_rc \
     chan_send_##T##_(chan_ *c, T msg) { \
         return c->hdr.cap > 0 ? \
-                chan_buf_send_##T##_(&c->buf_##T##_, msg, NULL) : \
-                chan_unbuf_rendez_(&c->unbuf, &msg, NULL, CHAN_SEND); \
+            buf_send_##T(&c->buf_##T##_, msg, NULL) : \
+            unbuf_rendez(&c->unbuf, &msg, NULL, CHAN_SEND); \
     } \
  \
     chan_rc \
     chan_recv_##T##_(chan_ *c, void *msg) { \
         return c->hdr.cap > 0 ? \
-                chan_buf_recv_##T##_(&c->buf_##T##_, msg, NULL) : \
-                chan_unbuf_rendez_(&c->unbuf, msg, NULL, CHAN_RECV); \
+            buf_recv_##T(&c->buf_##T##_, msg, NULL) : \
+            unbuf_rendez(&c->unbuf, msg, NULL, CHAN_RECV); \
     }
-CHAN_ALL_(CHAN_OP_DECL_, )
+CHAN_DEF_ALL_(CHAN_OP_DECL, )
 
-#define CHAN_TRYOP_DECL_(T, a_) \
+#define CHAN_TRYOP_DECL(T, a_) \
     chan_rc \
     chan_trysend_##T##_(chan_ *c, T msg) { \
         return c->hdr.cap > 0 ? \
-                chan_buf_trysend_##T##_(&c->buf_##T##_, msg) : \
-                chan_unbuf_try_(&c->unbuf, &msg, &c->unbuf.recvq); \
+            buf_trysend##T(&c->buf_##T##_, msg) : \
+            unbuf_try(&c->unbuf, &msg, &c->unbuf.recvq); \
     } \
  \
     chan_rc \
     chan_tryrecv_##T##_(chan_ *c, void *msg) { \
         return c->hdr.cap > 0 ? \
-                chan_buf_tryrecv_##T##_(&c->buf_##T##_, msg) : \
-                chan_unbuf_try_(&c->unbuf, msg, &c->unbuf.sendq); \
+            buf_tryrecv##T(&c->buf_##T##_, msg) : \
+            unbuf_try(&c->unbuf, msg, &c->unbuf.sendq); \
     }
-CHAN_ALL_(CHAN_TRYOP_DECL_, )
+CHAN_DEF_ALL_(CHAN_TRYOP_DECL, )
 
-#define CHAN_TIMEDOP_DECL_(T, a_) \
+#define CHAN_TIMEDOP_DECL(T, a_) \
     chan_rc \
     chan_timedsend_##T##_(chan_ *c, T msg, uint64_t timeout) { \
         struct timespec ts = ftx_rel_to_abs(timeout); \
         return c->hdr.cap > 0 ? \
-                chan_buf_send_##T##_(&c->buf_##T##_, msg, &ts) : \
-                chan_unbuf_rendez_(&c->unbuf, &msg, &ts, CHAN_SEND); \
+            buf_send_##T(&c->buf_##T##_, msg, &ts) : \
+            unbuf_rendez(&c->unbuf, &msg, &ts, CHAN_SEND); \
     } \
  \
     chan_rc \
     chan_timedrecv_##T##_(chan_ *c, void *msg, uint64_t timeout) { \
         struct timespec ts = ftx_rel_to_abs(timeout); \
         return c->hdr.cap > 0 ? \
-                chan_buf_recv_##T##_(&c->buf_##T##_, msg, &ts) : \
-                chan_unbuf_rendez_(&c->unbuf, msg, &ts, CHAN_RECV); \
+            buf_recv_##T(&c->buf_##T##_, msg, &ts) : \
+            unbuf_rendez(&c->unbuf, msg, &ts, CHAN_RECV); \
     }
-CHAN_ALL_(CHAN_TIMEDOP_DECL_, )
+CHAN_DEF_ALL_(CHAN_TIMEDOP_DECL, )
 
-chan_set *
-chan_set_make_(size_t cap) {
-    chan_set *s = malloc(sizeof(*s));
-    cee_assert(s);
-    s->cases = vec_make(chan_case_, 0, cap);
-    xset_rlx(&s->trg, (evt){0});
-    return s;
-}
-
-chan_set *
-chan_set_drop_(chan_set *s) {
-    vec_drop(s->cases);
-    free(s);
-    return NULL;
-}
-
-size_t
-chan_set_add_(
-    chan_set *s, chan_ *c, chan_op op, void *msg, chan_select_fns_ fns
-) {
-    vec_push(
-        &s->cases, ((chan_case_){.c = c, .msg = msg, .op = op, .fns = fns}));
-    cee_assert(s->cases.len - 1 <= RAND_MAX);
-    return s->cases.len - 1;
-}
-
-void
-chan_set_rereg_(chan_set *s, size_t id, chan_op op, void *msg) {
-    vec_idx(s->cases, id).op = op;
-    s->cases.arr[id].msg = msg;
-}
-
-#define CHAN_SELECT_DECL_(T, a_) \
+#define CHAN_SELECT_DECL(T, a_) \
     chan_rc \
-    chan_select_try_##T##_(chan_case_ *cc) { \
+    chan_select_try_##T##_(const chan_case *cc) { \
         return cc->op == CHAN_SEND ? \
             chan_trysend_##T##_(cc->c, *(T *)cc->msg) : \
             chan_tryrecv_##T##_(cc->c, cc->msg); \
@@ -582,130 +525,153 @@ chan_set_rereg_(chan_set *s, size_t id, chan_op op, void *msg) {
         chan_cell_(T) *cell = c->buf_##T##_.buf + u.idx; \
         return u.lap == xget_acq(&cell->lap); \
     }
-CHAN_ALL_(CHAN_SELECT_DECL_, )
+CHAN_DEF_ALL_(CHAN_SELECT_DECL, )
 
-static size_t
-chan_select_test_all_(chan_set *s, size_t offset) {
-    for (size_t i = 0; i < s->cases.len; i++) {
-        chan_case_ *cc = s->cases.arr + ((i + offset) % s->cases.len);
-        if (cc->fns.try(cc) == CHAN_OK) {
-            return (i + offset) % s->cases.len;
+size_t
+chan_tryselect_(chan_case cases[static 1], size_t len, size_t offset) {
+    size_t closedc = 0;
+    for (size_t i = 0; i < len; i++) {
+        chan_case *cc = cases + ((i + offset) % len);
+        if (cc->op == CHAN_NOOP) {
+            closedc++;
+            continue;
+        }
+        switch (cc->fns.try(cc)) {
+        case CHAN_OK: return (i + offset) % len;
+        case CHAN_WBLOCK: break;
+        case CHAN_CLOSED: closedc++;
         }
     }
-    return CHAN_SEL_NIL_;
+    return closedc == len ? SELECT_CLOSED : SELECT_NIL;
 }
 
-static chan_select_rc_
-chan_select_ready_or_wait_(
-    chan_set *s, _Atomic size_t *state, size_t offset
+static select_rc
+select_ready_or_wait(
+    chan_case cases[static 1],
+    waiter waiters[static 1],
+    size_t len,
+    size_t offset,
+    evt *trg,
+    _Atomic size_t *state
 ) {
     size_t closedc = 0;
-    for (size_t i = 0; i < s->cases.len; i++) {
-        chan_case_ *cc = s->cases.arr + ((i + offset) % s->cases.len);
+    for (size_t i = 0; i < len; i++) {
+        chan_case *cc = cases + ((i + offset) % len);
+        waiter *w = waiters + ((i + offset) % len);
         if (cc->op == CHAN_NOOP || xget_acq(&cc->c->hdr.openc) == 0) {
             closedc++;
             continue;
         }
 
         if (cc->c->hdr.cap == 0) {
-            cc->waiter.unbuf.msg = cc->msg;
+            w->unbuf.msg = cc->msg;
         }
-        cc->waiter.hdr.trg = &s->trg;
-        cc->waiter.hdr.sel_state = state;
-        cc->waiter.hdr.sel_id = (i + offset) % s->cases.len;
+        w->hdr.trg = trg;
+        w->hdr.sel_state = state;
+        w->hdr.sel_id = (i + offset) % len;
         chan_waiter_root_ *waitq = cc->op == CHAN_SEND ?
-                &cc->c->hdr.sendq : &cc->c->hdr.recvq;
+            &cc->c->hdr.sendq : &cc->c->hdr.recvq;
         mtx_lock(&cc->c->hdr.lock);
-        chan_waitq_push_(waitq, &cc->waiter);
+        waitq_push(waitq, w);
         if (cc->fns.check(cc->c, cc->op)) {
-            chan_waitq_remove_(&cc->waiter);
+            waitq_remove(w);
             mtx_unlock(&cc->c->hdr.lock);
-            cc->waiter.hdr.trg = NULL;
-            return CHAN_SEL_RC_READY_;
+            w->hdr.trg = NULL;
+            return SELECT_READY;
         }
         mtx_unlock(&cc->c->hdr.lock);
     }
-
-    if (closedc == s->cases.len) {
-        return CHAN_SEL_RC_CLOSED_;
-    }
-    return CHAN_SEL_RC_WAIT_;
+    return closedc == len ? SELECT_CLOSED : SELECT_WAIT;
 }
 
 static void
-chan_select_remove_waiters_(chan_set *s, size_t state) {
-    for (size_t i = 0; i < s->cases.len; i++) {
-        chan_case_ *cc = s->cases.arr + i;
+select_remove_waiters(
+    chan_case cases[static 1],
+    waiter waiters[static 1],
+    size_t len,
+    size_t state
+) {
+    for (size_t i = 0; i < len; i++) {
+        chan_case *cc = cases + i;
+        waiter *w = waiters + i;
         if (
             cc->op == CHAN_NOOP ||
             xget_acq(&cc->c->hdr.openc) == 0 ||
-            !cc->waiter.hdr.trg
+            !w->hdr.trg
         ) {
             continue;
         }
+
         mtx_lock(&cc->c->hdr.lock);
-        bool onqueue = chan_waitq_remove_(&cc->waiter);
+        bool onqueue = waitq_remove(w);
         mtx_unlock(&cc->c->hdr.lock);
         if (!onqueue && i != state) {
-            while (xget_acq(&cc->waiter.hdr.ref)) {
+            while (xget_acq(&w->hdr.ref)) {
                 sched_yield();
             }
         }
-        cc->waiter.hdr.trg = NULL;
+        w->hdr.trg = NULL;
     }
 }
 
 size_t
-chan_select_(chan_set *s, uint64_t timeout) {
-    size_t offset = rand() % s->cases.len;
+chan_select_(chan_case cases[static 1], size_t len, uint64_t timeout) {
     struct timespec ts;
-    if (timeout == 0) {
-        return chan_select_test_all_(s, offset);
-    }
-    if (timeout < UINT64_MAX) {
+    if (timeout > 0) {
         ts = ftx_rel_to_abs(timeout);
     }
-
-    bool timedout;
+    size_t rc, offset = rand();
+    waiter stk_waiters[8];
+    waiter *waiters = len > 8 ? calloc(len, sizeof(*waiters)) : stk_waiters;
+    evt trg = evt_make();
+    bool timedout = false;
     do {
-        size_t rc = chan_select_test_all_(s, offset);
-        if (rc != CHAN_SEL_NIL_) {
-            return rc;
+        if ((rc = chan_tryselect_(cases, len, offset)) != SELECT_NIL) {
+            goto ret;
         }
 
         _Atomic size_t state;
-        size_t magic = CHAN_SEL_MAGIC_;
-        timedout = false;
-        xset_rlx(&state, magic);
-        switch (chan_select_ready_or_wait_(s, &state, offset)) {
-        case CHAN_SEL_RC_CLOSED_: return CHAN_CLOSED;
-        case CHAN_SEL_RC_READY_:
-            xcas_s_acr_rlx(&state, &magic, CHAN_SEL_NIL_);
-            if (state < CHAN_SEL_NIL_) {
-                evt_wait(&s->trg);
+        xset_rlx(&state, SELECT_MAGIC);
+        size_t magic = SELECT_MAGIC;
+        switch (
+            select_ready_or_wait(cases, waiters, len, offset, &trg, &state)
+        ) {
+        case SELECT_CLOSED:
+            rc = CHAN_CLOSED;
+            goto ret;
+        case SELECT_READY:
+            xcas_s_acr_rlx(&state, &magic, SELECT_NIL);
+            if (xget_rlx(&state) < SELECT_NIL) {
+                evt_wait(&trg);
             }
             break;
-        case CHAN_SEL_RC_WAIT_:
-            if (timeout == UINT64_MAX) {
-                evt_wait(&s->trg);
-            } else if (!evt_timedwait(&s->trg, &ts)) {
+        case SELECT_WAIT:
+            if (timeout == 0) {
+                evt_wait(&trg);
+            } else if (!evt_timedwait(&trg, &ts)) {
                 timedout = true;
-                xcas_s_acr_rlx(&state, &magic, CHAN_SEL_NIL_);
-                if (state < CHAN_SEL_NIL_) {
-                    evt_wait(&s->trg);
+                xcas_s_acr_rlx(&state, &magic, SELECT_NIL);
+                if (xget_rlx(&state) < SELECT_NIL) {
+                    evt_wait(&trg);
                 }
                 break;
             }
-            xcas_s_acr_rlx(&state, &magic, CHAN_SEL_NIL_);
+            xcas_s_acr_rlx(&state, &magic, SELECT_NIL);
         }
 
-        chan_select_remove_waiters_(s, magic);
-        if (state < CHAN_SEL_NIL_) {
-            chan_case_ *cc = s->cases.arr + state;
+        select_remove_waiters(cases, waiters, len, xget_rlx(&state));
+        if (xget_rlx(&state) < SELECT_NIL) {
+            chan_case *cc = cases + xget_rlx(&state);
             if (cc->c->hdr.cap == 0 || cc->fns.try(cc) == CHAN_OK) {
-                return state;
+                rc = xget_rlx(&state);
+                goto ret;
             }
         }
     } while (!timedout);
-    return CHAN_WBLOCK;
+    rc = CHAN_WBLOCK;
+ret:
+    if (len > 8) {
+        free(waiters);
+    }
+    return rc;
 }

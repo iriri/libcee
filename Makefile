@@ -35,7 +35,7 @@ $(LIB): $(LIB_OBJS)
 	$(AR) rcs $(LIB) $(LIB_OBJS)
 
 $(TEST): obj/test/%: test/%.c $(LIB)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< obj/lib/libcee.a
+	$(CC) $(CFLAGS) -o $@ $< obj/lib/libcee.a $(LDFLAGS)
 
 .PHONY: clean install uninstall
 clean:

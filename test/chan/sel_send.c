@@ -35,19 +35,18 @@ main(void) {
     pthread_t pool[THREADC];
     chan(p(chan(int))) *c = chan_make(p(chan(int)), 0);
     int ia[THREADC];
-    chan_set *set = chan_set_make(1);
+    chan_case cases[THREADC];
     for (int i = 0; i < THREADC; i++) {
         cpool[i] = chan_make(int, 0);
         assert(pthread_create(pool + i, NULL, identity, c) == 0);
         assert(chan_send(c, cpool[i]) == CHAN_OK);
         assert(chan_send(cpool[i], i) == CHAN_OK);
         ia[i] = i;
-        chan_set_add(set, cpool[i], CHAN_SEND, &ia[i]);
+        cases[i] = chan_case(cpool[i], CHAN_SEND, &ia[i]);
     }
-    for (int i = 1; i <= 100; i++) {
-        chan_select(set);
+    for (int i = 1; i <= 1000; i++) {
+        chan_select(cases, THREADC);
     }
-    set = chan_set_drop(set);
     for (int i = 0; i < THREADC; i++) {
         chan_close(cpool[i]);
         assert(pthread_join(pool[i], NULL) == 0);

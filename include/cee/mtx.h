@@ -9,13 +9,12 @@
 typedef union mtx {
     _Atomic ftx _state;
     struct {
-        /* TODO: Make 64 bit ftx tags work too */
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-        _Atomic uint8_t _locked, _contend;
+        _Atomic uint8_t _locked, _contended;
         const uint8_t _pad, _pad1;
 #else
         const uint8_t _pad1, _pad;
-        _Atomic uint8_t _contend, _locked;
+        _Atomic uint8_t _contended, _locked;
 #endif
     };
 } mtx;
@@ -28,8 +27,9 @@ typedef union mtx {
 #define mtx_timedlock(m, timeout) mtx_timedlock_(m, timeout)
 #define mtx_unlock(m) mtx_unlock_(m)
 
+/* ---------------------------- Implementation ---------------------------- */
 void mtx_lock_(mtx *);
 bool mtx_trylock_(mtx *);
-bool mtx_timedlock_(mtx *, struct timespec *);
+bool mtx_timedlock_(mtx *, const struct timespec *);
 void mtx_unlock_(mtx *);
 #endif

@@ -19,8 +19,8 @@
     VEC_DEF(p(T))
 
 #define vec_make(T, len, cap) \
-    ((vec(T)){{vec_alloc_(sizeof(T), len, cap), len, cap}})
-#define vec_drop(v) (free((v).arr), (__typeof(v)){{0}})
+    (const vec(T)){{vec_alloc_(sizeof(T), len, cap), len, cap}}
+#define vec_drop(v) (free((v).arr), (const __typeof(v)){{0}})
 #define vec_shrink(v) vec_shrink_(&(v)->_vec, sizeof(*(v)->arr))
 #define vec_trim(v) vec_trim_(&(v)->_vec, sizeof(*(v)->arr))
 
@@ -33,13 +33,12 @@
 #define vec_peek(v, elt) vec_peek_(v, elt, __COUNTER__)
 #define vec_pop(v, elt) vec_pop_(v, elt, __COUNTER__)
 
-#define vec_concat(v, v1) \
-    do { \
-        _Static_assert( \
-            sizeof(*(v)->arr) == sizeof(*(v1).arr), \
-            "incompatible vector element sizes"); \
-        vec_concat_(&(v)->_vec, (v1)._vec, sizeof(*(v)->arr)); \
-    } while (0)
+#define vec_concat(v, v1) if (1) { \
+    _Static_assert( \
+        sizeof(*(v)->arr) == sizeof(*(v1).arr), \
+        "incompatible vector element sizes"); \
+    vec_concat_(&(v)->_vec, (v1)._vec, sizeof(*(v)->arr)); \
+} else (void)0
 #define vec_find(v, elt) vec_find_(v, elt, __COUNTER__)
 #define vec_remove(v, idx) vec_remove_(&(v)->_vec, idx, sizeof(*(v)->arr))
 
@@ -58,13 +57,13 @@ typedef struct vec_ {
     cee_sym_(v_, id).arr + cee_sym_(idx_, id); \
 })
 
-#define vec_push_(v, elt, id) do { \
+#define vec_push_(v, elt, id) if (1) { \
     __extension__ __auto_type cee_sym_(v_, id) = v; \
     if (cee_sym_(v_, id)->_vec.len == cee_sym_(v_, id)->_vec.cap) { \
         vec_grow_(&cee_sym_(v_, id)->_vec, sizeof(*(v)->arr)); \
     } \
     cee_sym_(v_, id)->arr[cee_sym_(v_, id)->_vec.len++] = elt; \
-} while (0)
+} else (void)0
 
 #define vec_peek_(v, elt, id) __extension__ ({ \
     __label__ ret; \

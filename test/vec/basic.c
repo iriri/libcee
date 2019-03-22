@@ -8,7 +8,7 @@ VEC_DEF(int);
 VEC_DEF(fn);
 
 void
-verify(vec(int) v, int *ia, size_t len) {
+verify(vec(int) v, const int ia[], size_t len) {
     if (vec_len(v) != len) {
         printf("len mismatch: %lu, %lu\n", vec_len(v), len);
         assert(0);
@@ -85,7 +85,7 @@ main(void) {
     vec_trim(&v3);
     vec_push(&v3, 1);
     vec_push(&v3, 2);
-    verify(v3, (int[]){1, 2}, 2);
+    verify(v3, (const int[]){1, 2}, 2);
     v3 = vec_drop(v3);
     printf("All tests passed\n");
     return 0;

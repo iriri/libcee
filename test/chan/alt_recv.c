@@ -43,7 +43,7 @@ main(void) {
         cases[i] = chan_case(cpool[i], CHAN_RECV, &ir);
     }
     for (int i = 1; i <= 1000; i++) {
-        int id = chan_select(cases, THREADC);
+        int id = chan_alt(cases, THREADC);
         printf("%d, %d\n", id, ir);
         if (ir != id) {
             printf("FUG: %d %d\n", ir, id);

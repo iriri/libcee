@@ -19,7 +19,7 @@ typedef union mtx {
     };
 } mtx;
 
-#define mtx_make() (mtx){0}
+#define mtx_make() (const mtx){0}
 
 /* Avoid name conflicts with C11 threads */
 #define mtx_lock(m) mtx_lock_(m)

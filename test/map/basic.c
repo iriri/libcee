@@ -31,7 +31,7 @@ main(void) {
 
     map(uint64_t, pair) *m1 = map_make(uint64_t, pair);
     for (uint64_t i = 0; i < 10000; i++) {
-        assert(map_put(m1, i, ((pair){i, i + 1})) == false);
+        assert(map_put(m1, i, ((const pair){i, i + 1})) == false);
     }
     pair b;
     for (uint64_t i = 0; i < 10000; i++) {

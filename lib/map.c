@@ -17,7 +17,7 @@ static const size_t PRIMESLEN = sizeof(primes) / sizeof(primes[0]);
 void *
 map_make_(size_t bktsize) {
     map_hdr_ *m = malloc(sizeof(*m));
-    *m = (map_hdr_){0, calloc(primes[0], bktsize), 0, primes[0], 0};
+    *m = (const map_hdr_){0, calloc(primes[0], bktsize), 0, primes[0], 0};
     return m;
 }
 
@@ -89,7 +89,7 @@ DEF_ALL(MAP_KEYS_DECL)
             if (m->bkts[i].state == MAP_BKT_FULL_) { \
                 for (size_t j = m->bkts[i].hash % cap; ; j = (j + 1) % cap) { \
                     if (bkts[j].state == MAP_BKT_EMPTY_) { \
-                        bkts[j] = (map_bkt_(K, V)){ \
+                        bkts[j] = (const map_bkt_(K, V)){ \
                             m->bkts[i].key, \
                             m->bkts[i].val, \
                             MAP_BKT_FULL_, \
@@ -101,7 +101,7 @@ DEF_ALL(MAP_KEYS_DECL)
             } \
         } \
         free(m->bkts); \
-        *m = (map_(K, V)){m->len, bkts, m->len, cap, sizeidx}; \
+        *m = (const map_(K, V)){m->len, bkts, m->len, cap, sizeidx}; \
     }
 DEF_ALL(RESIZE_DECL)
 
@@ -123,7 +123,7 @@ DEF_ALL(RESIZE_DECL)
                     m->used++; \
                 } \
                 m->bkts[putidx] = \
-                    (map_bkt_(K, V)){key, val, MAP_BKT_FULL_, hash}; \
+                    (const map_bkt_(K, V)){key, val, MAP_BKT_FULL_, hash}; \
                 m->len++; \
                 return false; \
             case MAP_BKT_FULL_: \
@@ -132,7 +132,9 @@ DEF_ALL(RESIZE_DECL)
                         *old_val = m->bkts[i].val; \
                     } \
                     m->bkts[i] = \
-                        (map_bkt_(K, V)){key, val, MAP_BKT_FULL_, hash}; \
+                        (const map_bkt_(K, V)){ \
+                            key, val, MAP_BKT_FULL_, hash \
+                        }; \
                     m->used++; \
                     return true; \
                 } \

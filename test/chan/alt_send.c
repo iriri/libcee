@@ -45,7 +45,7 @@ main(void) {
         cases[i] = chan_case(cpool[i], CHAN_SEND, &ia[i]);
     }
     for (int i = 1; i <= 1000; i++) {
-        chan_select(cases, THREADC);
+        chan_alt(cases, THREADC);
     }
     for (int i = 0; i < THREADC; i++) {
         chan_close(cpool[i]);

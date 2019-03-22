@@ -10,7 +10,7 @@ typedef struct evt {
     _Atomic ftx _state;
 } evt;
 
-#define evt_make() (evt){0}
+#define evt_make() (const evt){0}
 
 void evt_wait(evt *);
 bool evt_trywait(evt *);

@@ -107,7 +107,7 @@ main(void) {
     }
     ok = timedout = 0;
     for (int i = 1; i <= 10000; i++) {
-        size_t id = chan_timedselect(cases, THREADC, 100);
+        size_t id = chan_timedalt(cases, THREADC, 100);
         if (id != CHAN_WBLOCK) {
             ok++;
             assert((unsigned)ir == id);

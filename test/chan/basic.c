@@ -122,27 +122,27 @@ main(void) {
         assert(chan_send(c3, cpool[i]) == CHAN_OK);
         assert(chan_send(cpool[i], i) == CHAN_OK);
     }
-    int ir;
-    chan_case cases[THREADC] = {
-        chan_case(cpool[0], CHAN_RECV, &ir),
-        chan_case(cpool[1], CHAN_RECV, &ir),
-        chan_case(cpool[2], CHAN_RECV, &ir),
-        chan_case(cpool[3], CHAN_RECV, &ir),
-        chan_case(cpool[4], CHAN_RECV, &ir),
-        chan_case(cpool[5], CHAN_RECV, &ir),
-        chan_case(cpool[6], CHAN_RECV, &ir),
-        chan_case(cpool[7], CHAN_RECV, &ir),
-        chan_case(cpool[8], CHAN_RECV, &ir),
-        chan_case(cpool[9], CHAN_RECV, &ir),
-        chan_case(cpool[10], CHAN_RECV, &ir),
-        chan_case(cpool[11], CHAN_RECV, &ir),
-        chan_case(cpool[12], CHAN_RECV, &ir),
-        chan_case(cpool[13], CHAN_RECV, &ir),
-        chan_case(cpool[14], CHAN_RECV, &ir),
-        chan_case(cpool[15], CHAN_RECV, &ir),
-    };
+    int ir = 0;
     for (int i = 1; i <= 10000; i++) {
-        assert(chan_select(cases, THREADC) == (unsigned)ir);
+        chan_select(THREADC) {
+        chan_case_recv(cpool[0], &ir, 0): assert(ir == 0);
+        chan_case_recv(cpool[1], &ir, 1): assert(ir == 1);
+        chan_case_recv(cpool[2], &ir, 2): assert(ir == 2);
+        chan_case_recv(cpool[3], &ir, 3): assert(ir == 3);
+        chan_case_recv(cpool[4], &ir, 4): assert(ir == 4);
+        chan_case_recv(cpool[5], &ir, 5): assert(ir == 5);
+        chan_case_recv(cpool[6], &ir, 6): assert(ir == 6);
+        chan_case_recv(cpool[7], &ir, 7): assert(ir == 7);
+        chan_case_recv(cpool[8], &ir, 8): assert(ir == 8);
+        chan_case_recv(cpool[9], &ir, 9): assert(ir == 9);
+        chan_case_recv(cpool[10], &ir, 10): assert(ir == 10);
+        chan_case_recv(cpool[11], &ir, 11): assert(ir == 11);
+        chan_case_recv(cpool[12], &ir, 12): assert(ir == 12);
+        chan_case_recv(cpool[13], &ir, 13): assert(ir == 13);
+        chan_case_recv(cpool[14], &ir, 14): assert(ir == 14);
+        chan_case_recv(cpool[15], &ir, 15): assert(ir == 15);
+        chan_case_closed(): assert(false);
+        } chan_select_end;
     }
     for (int i = 0; i < THREADC; i++) {
         chan_close(cpool[i]);

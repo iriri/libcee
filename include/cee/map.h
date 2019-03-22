@@ -31,9 +31,9 @@
 
 #define map_make(K, V) __extension__ ({ \
     _Static_assert( \
-        MAP_DEF_ALL__(map_check_ksize_, K) false, "unsupported key size"); \
+        MAP_DEF_ALL__(map_test_ksize_, K) false, "unsupported key size"); \
     _Static_assert( \
-        MAP_DEF_ALL__(map_check_vsize_, V) false, "unsupported value size"); \
+        MAP_DEF_ALL__(map_test_vsize_, V) false, "unsupported value size"); \
     (map(K, V) *)map_make_(map_bktsize_(K, V)); \
 })
 #define map_drop(m) map_drop_(&(m)->_map.hdr)
@@ -45,19 +45,29 @@
 
 #define map_has(m, key) map_get(m, key, NULL)
 #define map_put(m, key, val) map_rep(m, key, val, NULL)
-#define map_get(m, key, val) __extension__ ({ \
-    map_assert_compatible_(m, key, *val, *val); \
-    MAP_MATCH_(key, *m->_phantom.v, map_get_, m, key, val, __COUNTER__, ); \
-})
+#define map_get(m, key, val) \
+    map_check_( \
+        m, \
+        key, \
+        *val, \
+        *val, \
+        MAP_MATCH_(key, *m->_phantom.v, map_get_, m, key, val, __COUNTER__, ))
 #define map_del(m, key) map_rem(m, key, NULL)
-#define map_rep(m, key, val, old_val) __extension__ ({ \
-    map_assert_compatible_(m, key, val, *old_val); \
-    MAP_MATCH_(key, val, map_rep_, m, key, val, old_val, __COUNTER__); \
-})
-#define map_rem(m, key, old_val) __extension__ ({ \
-    map_assert_compatible_(m, key, *old_val, *old_val); \
-    MAP_MATCH_(key, *m->_phantom.v, map_rem_, m, key, old_val, __COUNTER_, ); \
-})
+#define map_rep(m, key, val, old_val) \
+    map_check_( \
+        m, \
+        key, \
+        val, \
+        *old_val, \
+        MAP_MATCH_(key, val, map_rep_, m, key, val, old_val, __COUNTER__))
+#define map_rem(m, key, old_val) \
+    map_check_( \
+        m, \
+        key, \
+        *old_val, \
+        *old_val, \
+        MAP_MATCH_( \
+            key, *m->_phantom.v, map_rem_, m, key, old_val, __COUNTER_, ))
 
 /* ---------------------------- Implementation ---------------------------- */
 #define map_paste_(K, V) map_##K##_##V##_
@@ -137,7 +147,7 @@ typedef enum map_bkt_state_ {
 } map_bkt_state_;
 
 #define map_bkt_(K, V) map_bkt_##K##_##V##_
-#define MAP_BKT_DECL_(K, V, a_) \
+#define MAP_BKT_DECL_(K, V, _a) \
     typedef struct map_bkt_(K, V) { \
         K key; \
         V val; \
@@ -146,11 +156,11 @@ typedef enum map_bkt_state_ {
     } map_bkt_(K, V);
 MAP_DEF_ALL_(MAP_BKT_DECL_, )
 
-#define map_bktsize__(K, V, m_, key_, val_, a_, b_) sizeof(map_bkt_(K, V))
+#define map_bktsize__(K, V, _m, _key, _val, _a, _b) sizeof(map_bkt_(K, V))
 #define map_bktsize_(K, V) (MAP_MATCH__(K, V, map_bktsize__, , , , , ))
 
 #define map_(K, V) map_##K##_##V##__
-#define MAP_DECL_(K, V, a_) \
+#define MAP_DECL_(K, V, _a) \
     typedef struct map_(K, V) { \
         size_t len; \
         map_bkt_(K, V) *bkts; \
@@ -158,16 +168,16 @@ MAP_DEF_ALL_(MAP_BKT_DECL_, )
     } map_(K, V);
 MAP_DEF_ALL_(MAP_DECL_, )
 
-#define MAP_MEMB_(K, V, a_) map_(K, V) K##_##V##_;
+#define MAP_MEMB_(K, V, _a) map_(K, V) K##_##V##_;
 
 typedef union map_ {
     map_hdr_ hdr;
     MAP_DEF_ALL_(MAP_MEMB_, )
 } map_;
 
-#define map_check_ksize_(K, V, K1) sizeof(K) == sizeof(K1) ||
-#define map_check_vsize_(K, V, V1) sizeof(V) == sizeof(V1) ||
-#define map_assert_compatible_(m, key, val, val1) \
+#define map_test_ksize_(K, V, K1) sizeof(K) == sizeof(K1) ||
+#define map_test_vsize_(K, V, V1) sizeof(V) == sizeof(V1) ||
+#define map_check_(m, key, val, val1, ...) __extension__ ({ \
     _Static_assert( \
         _Generic((key), __typeof(*m->_phantom.k): true, default: false), \
         "incompatible map and key types"); \
@@ -178,9 +188,11 @@ typedef union map_ {
     _Static_assert( \
         _Generic((val1), __typeof(*m->_phantom.v): true, default: false) || \
         __builtin_types_compatible_p(void, __typeof(val1)), \
-        "incompatible map and value types")
+        "incompatible map and value types"); \
+    __VA_ARGS__; \
+})
 
-#define map_keys_(K, V, m, key_, val_, a_, b_) \
+#define map_keys_(K, V, m, _key, _val, _a, _b) \
     map_keys_##K##_##V##_(&(m)->_map.K##_##V##_)
 
 #define map_rep_(K, V, m, key, val, old_val, id) \
@@ -190,19 +202,19 @@ typedef union map_ {
         cee_to_(V, val, id), \
         (V *)old_val)
 
-#define map_get_(K, V, m, key, val, id, b_) \
+#define map_get_(K, V, m, key, val, id, _b) \
     map_get_##K##_##V##_( \
         &(m)->_map.K##_##V##_, \
         cee_to_(K, key, id), \
         (V *)val)
 
-#define map_rem_(K, V, m, key, old_val, id, b_) \
+#define map_rem_(K, V, m, key, old_val, id, _b) \
     map_rem_##K##_##V##_( \
         &(m)->_map.K##_##V##_, \
         cee_to_(K, key, id), \
         (V *)old_val)
 
-#define MAP_FN_DECL_(K, V, a_) \
+#define MAP_FN_DECL_(K, V, _a) \
     K *map_keys_##K##_##V##_(map_(K, V) *); \
     bool map_rep_##K##_##V##_(map_(K, V) *, K, V, V *); \
     bool map_get_##K##_##V##_(map_(K, V) *, K, V *); \

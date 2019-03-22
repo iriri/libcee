@@ -28,5 +28,5 @@ ftx_rel_to_abs(uint64_t timeout) {
 int
 ftx_backoff(int usec) {
     usleep(usec);
-    return usec > (1 << 11) ? usec - (rand() % usec) : usec << 1;
+    return usec > 1 << 11 ? usec - (rand() % usec) : usec << 1;
 }

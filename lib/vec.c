@@ -9,7 +9,7 @@
 void *
 vec_alloc_(size_t eltsize, size_t len, size_t cap) {
     cee_assert(
-        eltsize <= SIZE_MAX / 8 && // Ugh lol; see `vec_grow_`
+        eltsize <= SIZE_MAX / 8 && // see `vec_grow_`
         cap <= SIZE_MAX / eltsize &&
         len <= cap);
     void *arr = malloc(cap * eltsize);

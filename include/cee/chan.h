@@ -1,6 +1,5 @@
 #ifndef CEE_CHAN_H
 #define CEE_CHAN_H
-#include <limits.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -77,7 +76,7 @@ typedef enum chan_op {
         (const chan_case){ \
             .c = &(c_)->_chan, \
             .msg = msg_, \
-            .fns = chan_alt_fns_(msg_), \
+            .fns = chan_alt_fns_(*msg_), \
             .op = op_ \
         })
 #define chan_alt(cases, len) chan_alt_(cases, len, 0)
@@ -355,7 +354,7 @@ cee_sym_(chan_label_out_, ): \
     chan_rc chan_alt_try_##T##_(const chan_case *cc); \
     bool chan_alt_check_##T##_(chan_ *c, chan_op op);
 
-void *chan_make_(uint32_t, size_t, size_t);
+void *chan_make_(size_t, size_t, size_t);
 void *chan_drop_(chan_ *);
 void *chan_close_(chan_ *);
 CHAN_DEF_ALL_(CHAN_FN_DECL_, )

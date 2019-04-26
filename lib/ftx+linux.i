@@ -17,7 +17,7 @@ ftx_wait(_Atomic ftx *f, ftx val) {
         syscall(SYS_futex, f, FUTEX_WAIT_PRIVATE, val, NULL, NULL, 0) != 0
     ) {
         switch (errno) {
-        case EINTR: continue;
+        case EINTR: break;
         case EAGAIN: return errno;
         default: cee_assert(false);
         }
@@ -37,7 +37,7 @@ ftx_timedwait(_Atomic ftx *f, ftx val, const struct timespec *timeout) {
         FUTEX_BITSET_MATCH_ANY) != 0
     ) {
         switch (errno) {
-        case EINTR: continue;
+        case EINTR: break;
         case EAGAIN:
         case ETIMEDOUT: return errno;
         default: cee_assert(false);

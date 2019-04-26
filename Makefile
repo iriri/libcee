@@ -1,9 +1,4 @@
-CC = gcc
-#CC = clang
-AR = gcc-ar
-#AR = llvm-ar
-CFLAGS = -Wall -Wextra -Wpedantic -std=gnu11 -Iinclude -pthread -O2 -flto
-CFLAGS += -ffat-lto-objects
+CFLAGS += -Wall -Wextra -Wpedantic -std=gnu11 -Iinclude -pthread -O2 -flto
 CFLAGS += -Werror
 #CFLAGS += -g3
 #CFLAGS += -O0
@@ -12,7 +7,10 @@ CFLAGS += -Werror
 #CFLAGS += -fsanitize=thread
 #CFLAGS += -fsanitize=undefined
 #CFLAGS += -fPIC
-LDFLAGS = -fuse-ld=gold
+ifneq ($(findstring GCC, $(shell $(CC) --version)), )
+	CFLAGS += -ffat-lto-objects
+	LDFLAGS += -fuse-ld=gold
+endif
 PREFIX ?= /usr/local
 
 .PHONY: lib test

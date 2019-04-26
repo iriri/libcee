@@ -3,22 +3,11 @@
 #include <stdint.h>
 #include <time.h>
 
-#ifdef __linux__
 typedef uint32_t ftx;
-#elif __FreeBSD__
-#error "soon"
-#elif __OpenBSD__
-#error "soon"
-#elif __APPLE__
-#error "soon"
-#else
-#error "probably never"
-#endif
 
 int ftx_wait(_Atomic ftx *, ftx);
 int ftx_timedwait(_Atomic ftx *, ftx, const struct timespec *);
 void ftx_wake(_Atomic ftx *);
 void ftx_wakeall(_Atomic ftx *);
-struct timespec ftx_rel_to_abs(uint64_t);
 int ftx_backoff(int);
 #endif

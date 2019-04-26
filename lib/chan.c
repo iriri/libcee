@@ -6,8 +6,10 @@
 #include <sched.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <cee/cee.h>
 #include <cee/evt.h>
@@ -16,23 +18,17 @@
 
 #include <cee/chan.h>
 
-typedef enum alt_rc {
-    ALT_READY,
-    ALT_WAIT,
-    ALT_CLOSED,
-} alt_rc;
-
 static const size_t ALT_NIL = CHAN_WBLOCK;
 static const size_t ALT_MAGIC = CHAN_CLOSED;
 
 void *
-chan_make_(uint32_t msgsize, size_t cap, size_t cellsize) {
+chan_make_(size_t msgsize, size_t cap, size_t cellsize) {
     chan_ *c;
     if (cap == 0) {
-        cee_assert((c = calloc(1, sizeof(c->unbuf))));
+        cee_assert(msgsize <= UINT32_MAX && (c = calloc(1, sizeof(c->unbuf))));
         c->unbuf.msgsize = msgsize;
     } else {
-        cee_assert(cap <= SIZE_MAX / msgsize);
+        cee_assert(cap <= UINT32_MAX && cap <= SIZE_MAX / msgsize);
         cee_assert((c = calloc(
             1, offsetof(chan_buf_cee_u256__, buf) + (cap * cellsize))));
         c->buf_cee_u256__.cap = cap;
@@ -427,6 +423,16 @@ unbuf_rendez(
     return w.closed ? CHAN_CLOSED : CHAN_OK;
 }
 
+static struct timespec
+usec_to_timespec(uint64_t timeout) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    ts.tv_nsec += (timeout % 1000000) * 1000;
+    ts.tv_sec += (ts.tv_nsec / 1000000000) + (timeout / 1000000);
+    ts.tv_nsec %= 1000000000;
+    return ts;
+}
+
 #define CHAN_OP_DECL(T, a_) \
     chan_rc \
     chan_send_##T##_(chan_ *c, T msg) { \
@@ -462,7 +468,7 @@ CHAN_DEF_ALL_(CHAN_TRYOP_DECL, )
 #define CHAN_TIMEDOP_DECL(T, a_) \
     chan_rc \
     chan_timedsend_##T##_(chan_ *c, T msg, uint64_t timeout) { \
-        struct timespec ts = ftx_rel_to_abs(timeout); \
+        struct timespec ts = usec_to_timespec(timeout); \
         return c->hdr.cap > 0 ? \
             buf_send_##T(&c->buf_##T##_, msg, &ts) : \
             unbuf_rendez(&c->unbuf, &msg, &ts, CHAN_SEND); \
@@ -470,7 +476,7 @@ CHAN_DEF_ALL_(CHAN_TRYOP_DECL, )
  \
     chan_rc \
     chan_timedrecv_##T##_(chan_ *c, void *msg, uint64_t timeout) { \
-        struct timespec ts = ftx_rel_to_abs(timeout); \
+        struct timespec ts = usec_to_timespec(timeout); \
         return c->hdr.cap > 0 ? \
             buf_recv_##T(&c->buf_##T##_, msg, &ts) : \
             unbuf_rendez(&c->unbuf, msg, &ts, CHAN_RECV); \
@@ -497,7 +503,7 @@ CHAN_DEF_ALL_(CHAN_TIMEDOP_DECL, )
             (const chan_un64_){xget_acq(&c->buf_##T##_.write.u64)} : \
             (const chan_un64_){xget_acq(&c->buf_##T##_.read.u64)}; \
         chan_cell_(T) *cell = c->buf_##T##_.buf + u.idx; \
-        return u.lap == xget_acq(&cell->lap); \
+        return u.lap <= xget_acq(&cell->lap); \
     }
 CHAN_DEF_ALL_(CHAN_ALT_DECL, )
 
@@ -516,10 +522,14 @@ chan_tryalt_(const chan_case cases[], size_t len, size_t offset) {
         case CHAN_CLOSED: closedc++;
         }
     }
-    return closedc == len ? ALT_CLOSED : ALT_NIL;
+    return closedc == len ? CHAN_CLOSED : CHAN_WBLOCK;
 }
 
-static alt_rc
+static enum {
+    ALT_READY,
+    ALT_WAIT,
+    ALT_CLOSED,
+}
 alt_ready_or_wait(
     chan_case cases[static 1],
     size_t len,
@@ -584,25 +594,24 @@ size_t
 chan_alt_(chan_case cases[], size_t len, uint64_t timeout) {
     struct timespec ts;
     if (timeout > 0) {
-        ts = ftx_rel_to_abs(timeout);
+        ts = usec_to_timespec(timeout);
     }
     size_t offset = rand();
     evt trg = evt_make();
     bool timedout = false;
     do {
         size_t idx = chan_tryalt_(cases, len, offset);
-        if (idx != ALT_NIL) {
+        if (idx != CHAN_WBLOCK) {
             return idx;
         }
 
         _Atomic size_t state;
         xset_rlx(&state, ALT_MAGIC);
-        size_t magic = ALT_MAGIC;
+        size_t state1 = ALT_MAGIC;
         switch (alt_ready_or_wait(cases, len, offset, &trg, &state)) {
         case ALT_CLOSED: return CHAN_CLOSED;
         case ALT_READY:
-            xcas_s_acr_rlx(&state, &magic, ALT_NIL);
-            if (xget_rlx(&state) < ALT_NIL) {
+            if (!xcas_s_acr_rlx(&state, &state1, ALT_NIL)) {
                 evt_wait(&trg);
             }
             break;
@@ -611,20 +620,19 @@ chan_alt_(chan_case cases[], size_t len, uint64_t timeout) {
                 evt_wait(&trg);
             } else if (!evt_timedwait(&trg, &ts)) {
                 timedout = true;
-                xcas_s_acr_rlx(&state, &magic, ALT_NIL);
-                if (xget_rlx(&state) < ALT_NIL) {
+                if (!xcas_s_acr_rlx(&state, &state1, ALT_NIL)) {
                     evt_wait(&trg);
                 }
                 break;
             }
-            xcas_s_acr_rlx(&state, &magic, ALT_NIL);
+            xcas_s_acr_rlx(&state, &state1, ALT_NIL);
         }
 
-        alt_remove_waiters(cases, len, xget_rlx(&state));
-        if (xget_rlx(&state) < ALT_NIL) {
-            chan_case *cc = cases + xget_rlx(&state);
+        alt_remove_waiters(cases, len, state1);
+        if (state1 != ALT_MAGIC) {
+            chan_case *cc = cases + state1;
             if (cc->c->hdr.cap == 0 || cc->fns.try(cc) == CHAN_OK) {
-                return xget_rlx(&state);
+                return state1;
             }
         }
     } while (!timedout);

@@ -38,6 +38,6 @@ CEE_U_DECL_(256)
     u; \
 })
 
-__attribute__((noreturn)) void cee_assert_(
+__attribute__((cold, noreturn)) void cee_assert_(
     const char *, unsigned, const char *);
 #endif

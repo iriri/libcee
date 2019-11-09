@@ -15,9 +15,9 @@ static const size_t primes[] = {
 static const size_t PRIMESLEN = sizeof(primes) / sizeof(primes[0]);
 
 void *
-map_make_(size_t bktsize) {
+map_make_(size_t bktsz) {
     map_hdr_ *m = malloc(sizeof(*m));
-    *m = (const map_hdr_){0, calloc(primes[0], bktsize), 0, primes[0], 0};
+    *m = (const map_hdr_){0, calloc(primes[0], bktsz), 0, primes[0], 0};
     return m;
 }
 
@@ -30,9 +30,9 @@ map_drop_(map_hdr_ *m) {
 
 /* DJBX33X because I'm lazy. Replace with Murmur3 or w/e. Or not b/c icache? */
 static uint32_t
-djbx33x(const unsigned char *buf, size_t size) {
+djbx33x(const unsigned char *buf, size_t sz) {
     uint32_t hash = 5381;
-    for (size_t i = 0; i < size; i++) {
+    for (size_t i = 0; i < sz; i++) {
         hash = (hash * 33) ^ buf[i];
     }
     return hash;
@@ -81,9 +81,9 @@ DEF_ALL(MAP_KEYS_DECL)
 
 #define RESIZE_DECL(K, V, amp_, size_, eq_) \
     static void \
-    resize_##K##_##V(map_(K, V) *m, size_t sizeidx) { \
-        cee_assert(sizeidx < PRIMESLEN); \
-        size_t cap = primes[sizeidx]; \
+    resize_##K##_##V(map_(K, V) *m, size_t primesidx) { \
+        cee_assert(primesidx < PRIMESLEN); \
+        size_t cap = primes[primesidx]; \
         map_bkt_(K, V) *bkts = calloc(cap, sizeof(*bkts)); \
         for (size_t i = 0; i < m->cap; i++) { \
             if (m->bkts[i].state == MAP_BKT_FULL_) { \
@@ -101,7 +101,7 @@ DEF_ALL(MAP_KEYS_DECL)
             } \
         } \
         free(m->bkts); \
-        *m = (const map_(K, V)){m->len, bkts, m->len, cap, sizeidx}; \
+        *m = (const map_(K, V)){m->len, bkts, m->len, cap, primesidx}; \
     }
 DEF_ALL(RESIZE_DECL)
 
@@ -111,7 +111,7 @@ DEF_ALL(RESIZE_DECL)
     map_rep_##K##_##V##_(map_(K, V) *m, K key, V val, V *old_val) { \
         if ((double)m->used / m->cap > 0.75) {\
             resize_##K##_##V( \
-                m, m->sizeidx + ((double)m->len / m->cap > 0.3 ? 1 : 0)); \
+                m, m->primesidx + ((double)m->len / m->cap > 0.3 ? 1 : 0)); \
         } \
         uint32_t hash = djbx33x((unsigned char *)amp(key), size(key)); \
         size_t putidx = SIZE_MAX; \
@@ -184,8 +184,8 @@ DEF_ALL(MAP_GET_DECL)
                         *old_val = m->bkts[i].val; \
                     } \
                     m->len--; \
-                    if ((double)m->len / m->cap < 0.1 && m->sizeidx > 0) { \
-                        resize_##K##_##V(m, m->sizeidx - 1); \
+                    if ((double)m->len / m->cap < 0.1 && m->primesidx > 0) { \
+                        resize_##K##_##V(m, m->primesidx - 1); \
                     } \
                     return true; \
                 } /* fallthrough */ \

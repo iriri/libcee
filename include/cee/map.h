@@ -137,7 +137,7 @@ typedef uint64_t map_k64_;
 typedef struct map_hdr_ {
     size_t len;
     unsigned char *bkts;
-    size_t used, cap, sizeidx;
+    size_t used, cap, primesidx;
 } map_hdr_;
 
 typedef enum map_bkt_state_ {
@@ -164,11 +164,11 @@ MAP_DEF_ALL_(MAP_BKT_DECL_, )
     typedef struct map_(K, V) { \
         size_t len; \
         map_bkt_(K, V) *bkts; \
-        size_t used, cap, sizeidx; \
+        size_t used, cap, primesidx; \
     } map_(K, V);
 MAP_DEF_ALL_(MAP_DECL_, )
 
-#define MAP_MEMB_(K, V, _a) map_(K, V) K##_##V##_;
+#define MAP_MEMB_(K, V, _a) map_(K, V) K##_##V;
 
 typedef union map_ {
     map_hdr_ hdr;
@@ -193,24 +193,24 @@ typedef union map_ {
 })
 
 #define map_keys_(K, V, m, _key, _val, _a, _b) \
-    map_keys_##K##_##V##_(&(m)->_map.K##_##V##_)
+    map_keys_##K##_##V##_(&(m)->_map.K##_##V)
 
 #define map_rep_(K, V, m, key, val, old_val, id) \
     map_rep_##K##_##V##_( \
-        &(m)->_map.K##_##V##_, \
+        &(m)->_map.K##_##V, \
         cee_to_(K, key, id), \
         cee_to_(V, val, id), \
         (V *)old_val)
 
 #define map_get_(K, V, m, key, val, id, _b) \
     map_get_##K##_##V##_( \
-        &(m)->_map.K##_##V##_, \
+        &(m)->_map.K##_##V, \
         cee_to_(K, key, id), \
         (V *)val)
 
 #define map_rem_(K, V, m, key, old_val, id, _b) \
     map_rem_##K##_##V##_( \
-        &(m)->_map.K##_##V##_, \
+        &(m)->_map.K##_##V, \
         cee_to_(K, key, id), \
         (V *)old_val)
 

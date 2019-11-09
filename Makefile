@@ -27,7 +27,7 @@ obj:
 LIB_DEPS = $(wildcard include/cee/*.h)
 LIB_OBJS = $(patsubst %.c, obj/%.o, $(wildcard lib/*.c))
 obj/lib/%.o: lib/%.c $(LIB_DEPS)
-	$(CC) $(CFLAGS) -g3 -c -o $@ $<
+	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(LIB): $(LIB_OBJS)
 	$(AR) rcs $(LIB) $(LIB_OBJS)

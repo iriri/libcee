@@ -22,17 +22,17 @@ static const size_t ALT_NIL = CHAN_WBLOCK;
 static const size_t ALT_MAGIC = CHAN_CLOSED;
 
 void *
-chan_make_(size_t msgsize, size_t cap, size_t cellsize) {
+chan_make_(size_t msgsz, size_t cap, size_t cellsz) {
     chan_ *c;
     if (cap == 0) {
-        cee_assert(msgsize <= UINT32_MAX && (c = calloc(1, sizeof(c->unbuf))));
-        c->unbuf.msgsize = msgsize;
+        cee_assert(msgsz <= UINT32_MAX && (c = calloc(1, sizeof(c->unbuf))));
+        c->unbuf.msgsz = msgsz;
     } else {
-        cee_assert(cap <= UINT32_MAX && cap <= SIZE_MAX / msgsize);
+        cee_assert(cap <= UINT32_MAX && cap <= SIZE_MAX / msgsz);
         cee_assert((c = calloc(
-            1, offsetof(chan_buf_cee_u256__, buf) + (cap * cellsize))));
-        c->buf_cee_u256__.cap = cap;
-        xset_rlx(&c->buf_cee_u256__.read.lap, 1);
+            1, offsetof(chan_buf_(cee_u256_), buf) + (cap * cellsz))));
+        c->buf_cee_u256_.cap = cap;
+        xset_rlx(&c->buf_cee_u256_.read.lap, 1);
     }
     xset_rlx(&c->hdr.openc, 1);
     xset_rlx(&c->hdr.refc, 1);
@@ -53,6 +53,51 @@ chan_drop_(chan_ *c) {
     default: return NULL;
     }
 }
+
+void *
+chan_ptrdrop_(chan_ *c) {
+    switch (xsub_acr(&c->hdr.refc, 1)) {
+    case 0: cee_assert(false);
+    case 1:
+        if (c->hdr.cap > 0) {
+            chan_un64_ read = {xget_rlx(&c->buf_cee_u64_.read.u64)};
+            while (read.lap == xget_rlx(&c->buf_cee_u64_.buf[read.idx].lap)) {
+                free((void *)c->buf_cee_u64_.buf[read.idx].msg);
+                read.u64 = read.idx + 1 < c->buf_cee_u64_.cap ?
+                    read.u64 + 1 : (uint64_t)(read.lap + 2) << 32;
+            }
+        }
+        mtx_lock(&c->hdr.lock);
+        free(c); // fallthrough
+    default: return NULL;
+    }
+}
+
+#define CHAN_FNDROP_DECL(T, _a) \
+    void * \
+    buf_fndrop_##T(chan_buf_(T) *c, void (*fn)(void *)) { \
+        switch (xsub_acr(&c->refc, 1)) { \
+        case 0: cee_assert(false); \
+        case 1: { \
+            chan_un64_ read = {xget_rlx(&c->read.u64)}; \
+            while (read.lap == xget_rlx(&c->buf[read.idx].lap)) { \
+                fn(&c->buf[read.idx].msg); \
+                read.u64 = read.idx + 1 < c->cap ? \
+                    read.u64 + 1 : (uint64_t)(read.lap + 2) << 32; \
+            } \
+            mtx_lock(&c->lock); \
+            free(c); \
+        } /* fallthrough */ \
+        default: return NULL; \
+        } \
+    } \
+ \
+    void * \
+    chan_fndrop_##T##_(chan_ *c, void (*fn)(void *)) { \
+        return c->hdr.cap > 0 ? \
+            buf_fndrop_##T(&c->buf_##T, fn) : chan_drop_(c); \
+    }
+CHAN_DEF_ALL_(CHAN_FNDROP_DECL, )
 
 static void
 waitq_push(chan_waiter_root_ *waitq, chan_waiter_ *w) {
@@ -125,9 +170,9 @@ buf_waitq_shift(chan_waiter_root_ *waitq, mtx *lock) {
         chan_waiter_buf_ *w = &waitq_shift(waitq)->buf;
         mtx_unlock(lock);
         if (w) {
-            if (w->sel_state) {
+            if (w->alt_state) {
                 size_t magic = ALT_MAGIC;
-                if (!xcas_s_acr_rlx(w->sel_state, &magic, w->sel_id)) {
+                if (!xcas_s_acr_rlx(w->alt_state, &magic, w->alt_id)) {
                     xset_rel(&w->ref, false);
                     continue;
                 }
@@ -138,37 +183,40 @@ buf_waitq_shift(chan_waiter_root_ *waitq, mtx *lock) {
     }
 }
 
-#define BUF_TRYOP_DECL(T, a_) \
+#define BUF_TRYOP_DECL(T, _a) \
     static chan_rc \
     buf_trysend##T(chan_buf_(T) *c, T msg) { \
-        if (xget_acq(&c->openc) > 0) { \
-            int i = 0; \
-            chan_un64_ write = {xget_acq(&c->write.u64)}; \
-            do { \
-                chan_cell_(T) *cell = c->buf + write.idx; \
-                uint32_t lap = xget_acq(&cell->lap); \
-                if (write.lap == lap) { \
-                    uint64_t write1 = write.idx + 1 < c->cap ? \
-                        write.u64 + 1 : (uint64_t)(write.lap + 2) << 32; \
-                    if (!xcas_w_seq_acq(&c->write.u64, &write.u64, write1)) { \
-                        continue; \
-                    } \
-                    cell->msg = msg; \
-                    xset_rel(&cell->lap, lap + 1); \
-                    buf_waitq_shift(&c->recvq, &c->lock); \
-                    return CHAN_OK; \
-                } \
- \
-                if (write.lap > lap) { \
-                    if (++i > 4) { \
-                        return CHAN_WBLOCK; \
-                    } \
-                    sched_yield(); \
-                } \
-                write.u64 = xget_acq(&c->write.u64); \
-            } while (xget_acq(&c->openc) > 0); \
+        if (xget_acq(&c->openc) == 0) { \
+            return CHAN_CLOSED; \
         } \
-        return CHAN_CLOSED; \
+ \
+        chan_un64_ write = {xget_acq(&c->write.u64)}; \
+        for (int i = 0; ; ) {\
+            chan_cell_(T) *cell = c->buf + write.idx; \
+            uint32_t lap = xget_acq(&cell->lap); \
+            if (write.lap == lap) { \
+                uint64_t write1 = write.idx + 1 < c->cap ? \
+                    write.u64 + 1 : (uint64_t)(write.lap + 2) << 32; \
+                if (!xcas_w_seq_acq(&c->write.u64, &write.u64, write1)) { \
+                    continue; \
+                } \
+                cell->msg = msg; \
+                xset_rel(&cell->lap, lap + 1); \
+                buf_waitq_shift(&c->recvq, &c->lock); \
+                return CHAN_OK; \
+            } \
+\
+            if (write.lap > lap) { \
+                if (++i > 4) { \
+                    return CHAN_WBLOCK; \
+                } \
+                sched_yield(); \
+            } \
+            if (xget_acq(&c->openc) == 0) { \
+                return CHAN_CLOSED; \
+            } \
+            write.u64 = xget_acq(&c->write.u64); \
+        } \
     } \
  \
     static chan_rc \
@@ -220,18 +268,18 @@ unbuf_try(chan_unbuf_ *c, void *msg, chan_waiter_root_ *waitq) {
         if (!w) {
             return CHAN_WBLOCK;
         }
-        if (w->sel_state) {
+        if (w->alt_state) {
             size_t magic = ALT_MAGIC;
-            if (!xcas_s_acr_rlx(w->sel_state, &magic, w->sel_id)) {
+            if (!xcas_s_acr_rlx(w->alt_state, &magic, w->alt_id)) {
                 xset_rel(&w->ref, false);
                 continue;
             }
         }
 
         if (waitq == &c->recvq) {
-            memcpy(w->msg, msg, c->msgsize);
+            memcpy(w->msg, msg, c->msgsz);
         } else {
-            memcpy(msg, w->msg, c->msgsize);
+            memcpy(msg, w->msg, c->msgsz);
         }
         evt_post(w->trg);
         return CHAN_OK;
@@ -239,9 +287,11 @@ unbuf_try(chan_unbuf_ *c, void *msg, chan_waiter_root_ *waitq) {
     return CHAN_CLOSED;
 }
 
-#define BUF_OP_OR_WAIT_DECL(T, a_) \
+#define BUF_OP_DECL(T, _a) \
     static chan_rc \
-    buf_send_or_wait_##T(chan_buf_(T) *c, T msg, chan_waiter_buf_ *w) { \
+    buf_send_##T(chan_buf_(T) *c, T msg, const struct timespec *timeout) { \
+        evt trg = evt_make(); \
+        chan_waiter_buf_ w = {.trg = &trg, .alt_id = ALT_NIL}; \
         for ( ; ; ) { \
             chan_rc rc = buf_trysend##T(c, msg); \
             if (rc != CHAN_WBLOCK) { \
@@ -254,57 +304,14 @@ unbuf_try(chan_unbuf_ *c, void *msg, chan_waiter_root_ *waitq) {
                 return CHAN_CLOSED; \
             } \
             /* TODO: Casts are evil. Figure out how to get rid of these. */ \
-            waitq_push(&c->sendq, (chan_waiter_ *)w); \
+            waitq_push(&c->sendq, (chan_waiter_ *)&w); \
             chan_un64_ write = {xget_acq(&c->write.u64)}; \
-            chan_cell_(T) *cell = c->buf + write.idx; \
-            if (write.lap == xget_acq(&cell->lap)) { \
-                waitq_remove((chan_waiter_ *)w); \
+            if (write.lap == xget_acq(&c->buf[write.idx].lap)) { \
+                waitq_remove((chan_waiter_ *)&w); \
                 mtx_unlock(&c->lock); \
                 continue; \
             } \
             mtx_unlock(&c->lock); \
-            return CHAN_WBLOCK; \
-        } \
-    } \
- \
-    static chan_rc \
-    buf_recv_or_wait_##T(chan_buf_(T) *c, T *msg, chan_waiter_buf_ *w) { \
-        for ( ; ; ) { \
-            chan_rc rc = buf_tryrecv##T(c, msg); \
-            if (rc != CHAN_WBLOCK) { \
-                return rc; \
-            } \
- \
-            mtx_lock(&c->lock); \
-            waitq_push(&c->recvq, (chan_waiter_ *)w); \
-            chan_un64_ read = {xget_acq(&c->read.u64)}; \
-            chan_cell_(T) *cell = c->buf + read.idx; \
-            if (read.lap == xget_acq(&cell->lap)) { \
-                waitq_remove((chan_waiter_ *)w); \
-                mtx_unlock(&c->lock); \
-                continue; \
-            } \
-            if (xget_acq(&c->openc) == 0) { \
-                waitq_remove((chan_waiter_ *)w); \
-                mtx_unlock(&c->lock); \
-                return CHAN_CLOSED; \
-            } \
-            mtx_unlock(&c->lock); \
-            return CHAN_WBLOCK; \
-        } \
-    }
-CHAN_DEF_ALL_(BUF_OP_OR_WAIT_DECL, )
-
-#define BUF_OP_DECL(T, a_) \
-    static chan_rc \
-    buf_send_##T(chan_buf_(T) *c, T msg, const struct timespec *timeout) { \
-        evt trg = evt_make(); \
-        chan_waiter_buf_ w = {.trg = &trg, .sel_id = ALT_NIL}; \
-        for ( ; ; ) { \
-            chan_rc rc = buf_send_or_wait_##T(c, msg, &w); \
-            if (rc != CHAN_WBLOCK) { \
-                return rc; \
-            } \
  \
             if (timeout == NULL) { \
                 evt_wait(&trg); \
@@ -327,12 +334,27 @@ CHAN_DEF_ALL_(BUF_OP_OR_WAIT_DECL, )
     static chan_rc \
     buf_recv_##T(chan_buf_(T) *c, T *msg, const struct timespec *timeout) { \
         evt trg = evt_make(); \
-        chan_waiter_buf_ w = {.trg = &trg, .sel_id = ALT_NIL}; \
+        chan_waiter_buf_ w = {.trg = &trg, .alt_id = ALT_NIL}; \
         for ( ; ; ) { \
-            chan_rc rc = buf_recv_or_wait_##T(c, msg, &w); \
+            chan_rc rc = buf_tryrecv##T(c, msg); \
             if (rc != CHAN_WBLOCK) { \
                 return rc; \
             } \
+ \
+            mtx_lock(&c->lock); \
+            waitq_push(&c->recvq, (chan_waiter_ *)&w); \
+            chan_un64_ read = {xget_acq(&c->read.u64)}; \
+            if (read.lap == xget_acq(&c->buf[read.idx].lap)) { \
+                waitq_remove((chan_waiter_ *)&w); \
+                mtx_unlock(&c->lock); \
+                continue; \
+            } \
+            if (xget_acq(&c->openc) == 0) { \
+                waitq_remove((chan_waiter_ *)&w); \
+                mtx_unlock(&c->lock); \
+                return CHAN_CLOSED; \
+            } \
+            mtx_unlock(&c->lock); \
  \
             if (timeout == NULL) { \
                 evt_wait(&trg); \
@@ -376,17 +398,17 @@ unbuf_rendez_or_wait(
         chan_waiter_unbuf_ *w1 = &waitq_shift(shiftq)->unbuf;
         if (w1) {
             mtx_unlock(&c->lock);
-            if (w1->sel_state) {
+            if (w1->alt_state) {
                 size_t magic = ALT_MAGIC;
-                if (!xcas_s_acr_rlx(w1->sel_state, &magic, w1->sel_id)) {
+                if (!xcas_s_acr_rlx(w1->alt_state, &magic, w1->alt_id)) {
                     xset_rel(&w1->ref, false);
                     continue;
                 }
             }
             if (op == CHAN_SEND) {
-                memcpy(w1->msg, msg, c->msgsize);
+                memcpy(w1->msg, msg, c->msgsz);
             } else {
-                memcpy(msg, w1->msg, c->msgsize);
+                memcpy(msg, w1->msg, c->msgsz);
             }
             evt_post(w1->trg);
             return CHAN_OK;
@@ -403,7 +425,7 @@ unbuf_rendez(
     chan_unbuf_ *c, void *msg, const struct timespec *timeout, chan_op op
 ) {
     evt trg = evt_make();
-    chan_waiter_unbuf_ w = {.trg = &trg, .sel_id = ALT_NIL, .msg = msg};
+    chan_waiter_unbuf_ w = {.trg = &trg, .alt_id = ALT_NIL, .msg = msg};
     chan_rc rc = unbuf_rendez_or_wait(c, msg, &w, op);
     if (rc != CHAN_WBLOCK) {
         return rc;
@@ -433,44 +455,44 @@ usec_to_timespec(uint64_t timeout) {
     return ts;
 }
 
-#define CHAN_OP_DECL(T, a_) \
+#define CHAN_OP_DECL(T, _a) \
     chan_rc \
     chan_send_##T##_(chan_ *c, T msg) { \
         return c->hdr.cap > 0 ? \
-            buf_send_##T(&c->buf_##T##_, msg, NULL) : \
+            buf_send_##T(&c->buf_##T, msg, NULL) : \
             unbuf_rendez(&c->unbuf, &msg, NULL, CHAN_SEND); \
     } \
  \
     chan_rc \
     chan_recv_##T##_(chan_ *c, void *msg) { \
         return c->hdr.cap > 0 ? \
-            buf_recv_##T(&c->buf_##T##_, msg, NULL) : \
+            buf_recv_##T(&c->buf_##T, msg, NULL) : \
             unbuf_rendez(&c->unbuf, msg, NULL, CHAN_RECV); \
     }
 CHAN_DEF_ALL_(CHAN_OP_DECL, )
 
-#define CHAN_TRYOP_DECL(T, a_) \
+#define CHAN_TRYOP_DECL(T, _a) \
     chan_rc \
     chan_trysend_##T##_(chan_ *c, T msg) { \
         return c->hdr.cap > 0 ? \
-            buf_trysend##T(&c->buf_##T##_, msg) : \
+            buf_trysend##T(&c->buf_##T, msg) : \
             unbuf_try(&c->unbuf, &msg, &c->unbuf.recvq); \
     } \
  \
     chan_rc \
     chan_tryrecv_##T##_(chan_ *c, void *msg) { \
         return c->hdr.cap > 0 ? \
-            buf_tryrecv##T(&c->buf_##T##_, msg) : \
+            buf_tryrecv##T(&c->buf_##T, msg) : \
             unbuf_try(&c->unbuf, msg, &c->unbuf.sendq); \
     }
 CHAN_DEF_ALL_(CHAN_TRYOP_DECL, )
 
-#define CHAN_TIMEDOP_DECL(T, a_) \
+#define CHAN_TIMEDOP_DECL(T, _a) \
     chan_rc \
     chan_timedsend_##T##_(chan_ *c, T msg, uint64_t timeout) { \
         struct timespec ts = usec_to_timespec(timeout); \
         return c->hdr.cap > 0 ? \
-            buf_send_##T(&c->buf_##T##_, msg, &ts) : \
+            buf_send_##T(&c->buf_##T, msg, &ts) : \
             unbuf_rendez(&c->unbuf, &msg, &ts, CHAN_SEND); \
     } \
  \
@@ -478,12 +500,12 @@ CHAN_DEF_ALL_(CHAN_TRYOP_DECL, )
     chan_timedrecv_##T##_(chan_ *c, void *msg, uint64_t timeout) { \
         struct timespec ts = usec_to_timespec(timeout); \
         return c->hdr.cap > 0 ? \
-            buf_recv_##T(&c->buf_##T##_, msg, &ts) : \
+            buf_recv_##T(&c->buf_##T, msg, &ts) : \
             unbuf_rendez(&c->unbuf, msg, &ts, CHAN_RECV); \
     }
 CHAN_DEF_ALL_(CHAN_TIMEDOP_DECL, )
 
-#define CHAN_ALT_DECL(T, a_) \
+#define CHAN_ALT_DECL(T, _a) \
     chan_rc \
     chan_alt_try_##T##_(const chan_case *cc) { \
         return cc->op == CHAN_SEND ? \
@@ -498,11 +520,10 @@ CHAN_DEF_ALL_(CHAN_TIMEDOP_DECL, )
                 &xget_acq(&c->unbuf.recvq.next)->root != &c->unbuf.recvq : \
                 &xget_acq(&c->unbuf.sendq.next)->root != &c->unbuf.sendq; \
         } \
- \
         chan_un64_ u = op == CHAN_SEND ? \
-            (const chan_un64_){xget_acq(&c->buf_##T##_.write.u64)} : \
-            (const chan_un64_){xget_acq(&c->buf_##T##_.read.u64)}; \
-        chan_cell_(T) *cell = c->buf_##T##_.buf + u.idx; \
+            (const chan_un64_){xget_acq(&c->buf_##T.write.u64)} : \
+            (const chan_un64_){xget_acq(&c->buf_##T.read.u64)}; \
+        chan_cell_(T) *cell = c->buf_##T.buf + u.idx; \
         return u.lap <= xget_acq(&cell->lap); \
     }
 CHAN_DEF_ALL_(CHAN_ALT_DECL, )
@@ -549,8 +570,8 @@ alt_ready_or_wait(
             cc->w.unbuf.msg = cc->msg;
         }
         cc->w.hdr.trg = trg;
-        cc->w.hdr.sel_state = state;
-        cc->w.hdr.sel_id = (i + offset) % len;
+        cc->w.hdr.alt_state = state;
+        cc->w.hdr.alt_id = (i + offset) % len;
         chan_waiter_root_ *waitq = cc->op == CHAN_SEND ?
             &cc->c->hdr.sendq : &cc->c->hdr.recvq;
         mtx_lock(&cc->c->hdr.lock);

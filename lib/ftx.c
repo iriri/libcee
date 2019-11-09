@@ -1,4 +1,3 @@
-#include <stdlib.h>
 #include <unistd.h>
 
 #ifdef __linux__
@@ -13,8 +12,8 @@
 #error "probably never"
 #endif
 
-int
-ftx_backoff(int usec) {
+useconds_t
+ftx_backoff(useconds_t usec) {
     usleep(usec);
-    return usec > 1 << 11 ? usec - (rand() % usec) : usec << 1;
+    return usec > 1 << 7 ? usec : usec << 1;
 }

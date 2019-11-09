@@ -40,11 +40,14 @@ typedef enum chan_op {
 
 #define chan_make(T, cap) __extension__ ({ \
     _Static_assert(CHAN_DEF_ALL_( \
-        chan_test_msgsize_, T) false, "unsupported message size"); \
-    (chan(T) *)chan_make_(sizeof(T), cap, chan_cellsize_(T)); \
+        chan_test_msgsz_, T) false, "unsupported message size"); \
+    (chan(T) *)chan_make_(sizeof(T), cap, chan_cellsz_(T)); \
 })
 #define chan_dup(c) chan_dup_(c, __COUNTER__)
 #define chan_drop(c) chan_drop_(&(c)->_chan)
+#define chan_ptrdrop(c) \
+    ((void)sizeof(**c->_phantom), chan_ptrdrop_(&(c)->_chan))
+#define chan_fndrop(c, fn) CHAN_MATCH_(*c->_phantom, chan_fndrop_, c, fn, , )
 #define chan_open(c) chan_open_(c, __COUNTER__)
 #define chan_close(c) chan_close_(&(c)->_chan)
 
@@ -127,12 +130,12 @@ typedef enum chan_op {
     f(cee_u128_, a) \
     f(cee_u192_, a) \
     f(cee_u256_, a)
-#define CHAN_MATCH_(l, r, c, msg, a, b) \
-    sizeof(l) == sizeof(cee_u32_) ? r(cee_u32_, c, msg, a, b) : \
-    sizeof(l) == sizeof(cee_u64_) ? r(cee_u64_, c, msg, a, b) : \
-    sizeof(l) == sizeof(cee_u128_) ? r(cee_u128_, c, msg, a, b) : \
-    sizeof(l) == sizeof(cee_u192_) ? r(cee_u192_, c, msg, a, b) : \
-        r(cee_u256_, c, msg, a, b)
+#define CHAN_MATCH_(l, r, c, arg, a, b) \
+    sizeof(l) == sizeof(cee_u32_) ? r(cee_u32_, c, arg, a, b) : \
+    sizeof(l) == sizeof(cee_u64_) ? r(cee_u64_, c, arg, a, b) : \
+    sizeof(l) == sizeof(cee_u128_) ? r(cee_u128_, c, arg, a, b) : \
+    sizeof(l) == sizeof(cee_u192_) ? r(cee_u192_, c, arg, a, b) : \
+        r(cee_u256_, c, arg, a, b)
 
 typedef struct chan_waiter_root_ {
     union chan_waiter_ *_Atomic next, *_Atomic prev;
@@ -141,8 +144,8 @@ typedef struct chan_waiter_root_ {
 typedef struct chan_waiter_hdr_ {
     union chan_waiter_ *next, *prev;
     evt *trg;
-    _Atomic size_t *sel_state;
-    size_t sel_id;
+    _Atomic size_t *alt_state;
+    size_t alt_id;
     _Atomic bool ref;
 } chan_waiter_hdr_;
 
@@ -151,8 +154,8 @@ typedef chan_waiter_hdr_ chan_waiter_buf_;
 typedef struct chan_waiter_unbuf_ {
     struct waiter_unbuf *next, *prev;
     evt *trg;
-    _Atomic size_t *sel_state;
-    size_t sel_id;
+    _Atomic size_t *alt_state;
+    size_t alt_id;
     _Atomic bool ref;
     void *msg;
     bool closed;
@@ -177,7 +180,7 @@ typedef struct chan_unbuf_ {
     mtx lock;
     _Atomic uint32_t openc, refc;
     chan_waiter_root_ sendq, recvq;
-    size_t msgsize;
+    size_t msgsz;
 } chan_unbuf_;
 
 typedef union chan_aun64_ {
@@ -210,8 +213,8 @@ typedef union chan_un64_ {
     } chan_cell_(T);
 CHAN_DEF_ALL_(CHAN_CELL_DECL_, )
 
-#define chan_cellsize__(T, _c, _msg, _a, _b) sizeof(chan_cell_(T))
-#define chan_cellsize_(T) (CHAN_MATCH_(T, chan_cellsize__, , , , ))
+#define chan_cellsz__(T, _c, _arg, _a, _b) sizeof(chan_cell_(T))
+#define chan_cellsz_(T) (CHAN_MATCH_(T, chan_cellsz__, , , , ))
 
 #define chan_buf_(T) chan_buf_##T##_
 #define CHAN_BUF_DECL_(T, _a) \
@@ -229,7 +232,7 @@ CHAN_DEF_ALL_(CHAN_CELL_DECL_, )
     } chan_buf_(T);
 CHAN_DEF_ALL_(CHAN_BUF_DECL_, )
 
-#define CHAN_BUF_MEMB_(T, _a) chan_buf_(T) buf_##T##_;
+#define CHAN_BUF_MEMB_(T, _a) chan_buf_(T) buf_##T;
 
 typedef union chan_ {
     chan_hdr_ hdr;
@@ -251,13 +254,16 @@ struct chan_case {
     chan_waiter_ w;
 };
 
-#define chan_test_msgsize_(T, T1) sizeof(T) == sizeof(T1) ||
+#define chan_test_msgsz_(T, T1) sizeof(T) == sizeof(T1) ||
 #define chan_check_(c, msg, ...) __extension__ ({ \
     _Static_assert( \
         _Generic((msg), __typeof(*c->_phantom): true, default: false), \
         "incompatible channel and message types"); \
     __VA_ARGS__; \
 })
+
+#define chan_fndrop_(T, c, fn, _a, _b) \
+    chan_fndrop_##T##_(&(c)->_chan, fn)
 
 #define chan_send_(T, c, msg, id, _b) \
     chan_send_##T##_(&(c)->_chan, cee_to_(T, msg, id))
@@ -287,7 +293,7 @@ struct chan_case {
     cee_sym_(c_, id); \
 })
 
-#define chan_alt_fns__(T, _c, _msg, _a, _b) \
+#define chan_alt_fns__(T, _c, _arg, _a, _b) \
     (const chan_alt_fns_){chan_alt_try_##T##_, chan_alt_check_##T##_}
 #define chan_alt_fns_(msg) (CHAN_MATCH_(msg, chan_alt_fns__, , , , ))
 
@@ -345,6 +351,7 @@ cee_sym_(chan_label_out_, ): \
         } \
 
 #define CHAN_FN_DECL_(T, _a) \
+    void *chan_fndrop_##T##_(chan_ *, void (*)(void *)); \
     chan_rc chan_send_##T##_(chan_ *, T); \
     chan_rc chan_recv_##T##_(chan_ *, void *); \
     chan_rc chan_trysend_##T##_(chan_ *, T); \
@@ -356,6 +363,7 @@ cee_sym_(chan_label_out_, ): \
 
 void *chan_make_(size_t, size_t, size_t);
 void *chan_drop_(chan_ *);
+void *chan_ptrdrop_(chan_ *);
 void *chan_close_(chan_ *);
 CHAN_DEF_ALL_(CHAN_FN_DECL_, )
 size_t chan_alt_(chan_case[], size_t, uint64_t);

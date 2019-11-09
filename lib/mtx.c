@@ -23,15 +23,16 @@ static const ftx LOCKED_CONTENDED = 0x0101;
 
 void
 mtx_lock_(mtx *m) {
-    for (int i = 0, usec = 1; i < SPINS; i++) {
+    useconds_t usec = 1;
+    for (int i = 0; i < SPINS; i++) {
         uint8_t locked = 0;
-        if (xcas_s_seq_acq(&m->_locked, &locked, true)) {
+        if (xcas_s_acr_rlx(&m->_locked, &locked, true)) {
             return;
         }
         usec = ftx_backoff(usec);
     }
 
-    while ((xchg_seq(&m->_state, LOCKED_CONTENDED) & LOCKED) != 0) {
+    while ((xchg_acr(&m->_state, LOCKED_CONTENDED) & LOCKED) != 0) {
         ftx_wait(&m->_state, LOCKED_CONTENDED);
     }
 }
@@ -39,14 +40,15 @@ mtx_lock_(mtx *m) {
 bool
 mtx_trylock_(mtx *m) {
     uint8_t unlocked = 0;
-    return xcas_s_seq_rlx(&m->_locked, &unlocked, true);
+    return xcas_s_acr_rlx(&m->_locked, &unlocked, true);
 }
 
 bool
 mtx_timedlock_(mtx *m, const struct timespec *timeout) {
-    for (int i = 0, usec = 1; i < SPINS; i++) {
+    useconds_t usec = 1;
+    for (int i = 0; i < SPINS; i++) {
         uint8_t locked = 0;
-        if (xcas_s_seq_acq(&m->_locked, &locked, true)) {
+        if (xcas_s_acr_rlx(&m->_locked, &locked, true)) {
             return true;
         }
         usec = ftx_backoff(usec);
@@ -55,7 +57,7 @@ mtx_timedlock_(mtx *m, const struct timespec *timeout) {
     int rc = 0;
     while (
         rc != ETIMEDOUT &&
-        (xchg_seq(&m->_state, LOCKED_CONTENDED) & LOCKED) != 0
+        (xchg_acr(&m->_state, LOCKED_CONTENDED) & LOCKED) != 0
     ) {
         rc = ftx_timedwait(&m->_state, LOCKED_CONTENDED, timeout);
     }
@@ -66,19 +68,20 @@ void
 mtx_unlock_(mtx *m) {
     if (xget_rlx(&m->_state) == LOCKED) {
         ftx locked = LOCKED;
-        if (xcas_s_seq_rlx(&m->_state, &locked, UNLOCKED)) {
+        if (xcas_s_acr_rlx(&m->_state, &locked, UNLOCKED)) {
             return;
         }
     }
 
-    xset_seq(&m->_locked, 0);
-    for (int i = 0, usec = 1; i < SPINS; i++) {
-        if (xget_seq(&m->_locked) == 1) {
+    xset_rel(&m->_locked, 0);
+    useconds_t usec = 1;
+    for (int i = 0; i < SPINS; i++) {
+        if (xget_rlx(&m->_locked) == 1) {
             return;
         }
         usec = ftx_backoff(usec);
     }
 
-    xset_seq(&m->_contended, 0);
+    xset_rel(&m->_contended, 0);
     ftx_wake(&m->_state);
 }

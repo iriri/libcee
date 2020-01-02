@@ -6,5 +6,6 @@ Dmitry Vyukov.
 The map library uses prime numbers from "good hash table primes" by akrowne on
 PlanetMath and the DJBX33X hash function by, well, Daniel J. Bernstein.
 
-The mutex implementation is shamelessly copied from "Mutexes and Condition
-Variables using Futexes" by Steven Fuerst.
+The mutex implementation was originally shamelessly copied from "Mutexes and
+Condition Variables using Futexes" by Steven Fuerst but has evolved somewhat
+since, probably for the worse.

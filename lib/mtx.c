@@ -1,87 +1,186 @@
+#if MTX_IMPL == 0
 /* I didn't write this (completely) out of NIH symdrome. I just wanted a mutex
- * that didn't take up 5/8ths of a cache line, unlike glibc's. I ended up
- * shamelessly coping the implementation from "Mutexes and Condition Variables
- * using Futexes" by Steven Fuerst.
- *
- * Ironically the bloatedness of glibc's mutex can be a feature. Sometimes it
- * just happens to push the right fields into different cache lines, improving
- * performance by preventing false sharing. */
+ * that didn't take up 5/8ths of a cache line, unlike glibc's. This
+ * implementation was originally shamelessly copied from "Mutexes and Condition
+ * Variables using Futexes" by Steven Fuerst but has evolved somewhat since,
+ * probably for the worse. */
 #include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <time.h>
 
+#include <cee/cee.h>
 #include <cee/ftx.h>
 #include <cee/xops.h>
 
 #include <cee/mtx.h>
 
 static const int SPINS = 64;
-static const ftx UNLOCKED = 0x0000;
-static const ftx LOCKED = 0x0001;
-static const ftx LOCKED_CONTENDED = 0x0101;
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+static const ftx WAITER = 0x00000100;
+#else
+static const ftx WAITER = 0x00000001;
+#endif
 
 void
 mtx_lock_(mtx *m) {
-    useconds_t usec = 1;
     for (int i = 0; i < SPINS; i++) {
-        uint8_t locked = 0;
-        if (xcas_s_acr_rlx(&m->_locked, &locked, true)) {
-            return;
+        if (xget_rlx(&m->_locked) == 0) {
+            uint8_t unlocked = 0;
+            if (xcas_w_acr_rlx(&m->_locked, &unlocked, 1)) {
+                return;
+            }
         }
-        usec = ftx_backoff(usec);
+        cee_pause16();
     }
 
-    while ((xchg_acr(&m->_state, LOCKED_CONTENDED) & LOCKED) != 0) {
-        ftx_wait(&m->_state, LOCKED_CONTENDED);
+    for (ftx s = xadd_acr(&m->_state, WAITER); ; s = xget_rlx(&m->_state)) {
+        if ((s & 0x1) == 0x0) {
+            uint8_t unlocked = 0;
+            if (xcas_w_acr_rlx(&m->_locked, &unlocked, 1)) {
+                xsub_acr(&m->_state, WAITER);
+                return;
+            }
+        }
+
+        ftx_wait(&m->_state, s);
     }
 }
 
 bool
 mtx_trylock_(mtx *m) {
     uint8_t unlocked = 0;
-    return xcas_s_acr_rlx(&m->_locked, &unlocked, true);
+    return xcas_s_acr_rlx(&m->_locked, &unlocked, 1);
 }
 
 bool
 mtx_timedlock_(mtx *m, const struct timespec *timeout) {
-    useconds_t usec = 1;
     for (int i = 0; i < SPINS; i++) {
-        uint8_t locked = 0;
-        if (xcas_s_acr_rlx(&m->_locked, &locked, true)) {
-            return true;
+        if (xget_rlx(&m->_locked) == 0) {
+            uint8_t unlocked = 0;
+            if (xcas_w_acr_rlx(&m->_locked, &unlocked, 1)) {
+                return true;
+            }
         }
-        usec = ftx_backoff(usec);
+        cee_pause16();
     }
 
-    int rc = 0;
-    while (
-        rc != ETIMEDOUT &&
-        (xchg_acr(&m->_state, LOCKED_CONTENDED) & LOCKED) != 0
-    ) {
-        rc = ftx_timedwait(&m->_state, LOCKED_CONTENDED, timeout);
+    for (ftx s = xadd_acr(&m->_state, WAITER); ; s = xget_rlx(&m->_state)) {
+        if ((s & 0x1) == 0x0) {
+            uint8_t unlocked = 0;
+            if (xcas_w_acr_rlx(&m->_locked, &unlocked, 1)) {
+                xsub_acr(&m->_state, WAITER);
+                return true;
+            }
+        }
+
+        if (ftx_timedwait(&m->_state, s, timeout) == ETIMEDOUT) {
+            xsub_acr(&m->_state, WAITER);
+            return false;
+        }
     }
-    return rc != ETIMEDOUT;
 }
 
 void
 mtx_unlock_(mtx *m) {
-    if (xget_rlx(&m->_state) == LOCKED) {
-        ftx locked = LOCKED;
-        if (xcas_s_acr_rlx(&m->_state, &locked, UNLOCKED)) {
-            return;
-        }
+    if (xsub_acr(&m->_state, 0x1) == 0x1) {
+        return;
     }
-
-    xset_rel(&m->_locked, 0);
-    useconds_t usec = 1;
     for (int i = 0; i < SPINS; i++) {
         if (xget_rlx(&m->_locked) == 1) {
             return;
         }
-        usec = ftx_backoff(usec);
+        cee_pause16();
     }
 
-    xset_rel(&m->_contended, 0);
     ftx_wake(&m->_state);
 }
+#else
+#include <errno.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <time.h>
+
+#include <cee/cee.h>
+#include <cee/ftx.h>
+#include <cee/xops.h>
+
+#include <cee/mtx.h>
+
+static const int SPINS = 64;
+static const ftx LOCKBIT = 0x80000000;
+static const ftx LOCKED = LOCKBIT | 0x1;
+
+void
+mtx_lock_(mtx *m) {
+    if (xget_rlx(&m->_state) == 0x0) {
+        ftx unlocked = 0x0;
+        if (xcas_w_acr_rlx(&m->_state, &unlocked, LOCKED)) {
+            return;
+        }
+    }
+
+    int i = 0;
+    for (ftx s = xadd_rlx(&m->_state, 0x1); ; ) {
+        if ((s & LOCKBIT) != 0x0) {
+            if (i < SPINS) {
+                i++;
+                cee_pause16();
+            } else {
+                ftx_wait(&m->_state, s);
+            }
+            s = xget_rlx(&m->_state);
+        } else if (xcas_w_acr_rlx(&m->_state, &s, s | LOCKBIT)) {
+            return;
+        }
+    }
+}
+
+bool
+mtx_trylock_(mtx *m) {
+    ftx unlocked = 0;
+    return xcas_s_acr_rlx(&m->_state, &unlocked, LOCKED);
+}
+
+bool
+mtx_timedlock_(mtx *m, const struct timespec *timeout) {
+    if (xget_rlx(&m->_state) == 0x0) {
+        ftx unlocked = 0x0;
+        if (xcas_w_acr_rlx(&m->_state, &unlocked, LOCKED)) {
+            return true;
+        }
+    }
+
+    int i = 0;
+    for (ftx s = xadd_rlx(&m->_state, 0x1); ; ) {
+        if ((s & LOCKBIT) != 0x0) {
+            if (i < SPINS) {
+                i++;
+                cee_pause16();
+            } else if (
+                ftx_timedwait(&m->_state, s, timeout) == ETIMEDOUT
+            ) {
+                return false;
+            }
+            s = xget_rlx(&m->_state);
+        } else if (xcas_w_acr_rlx(&m->_state, &s, s | LOCKBIT)) {
+            return true;
+        }
+    }
+}
+
+void
+mtx_unlock_(mtx *m) {
+    if (xsub_acr(&m->_state, LOCKED) == LOCKED) {
+        return;
+    }
+    for (int i = 0; i < SPINS; i++) {
+        if ((xget_rlx(&m->_state) & LOCKBIT) != 0x0) {
+            return;
+        }
+        cee_pause16();
+    }
+
+    ftx_wake(&m->_state);
+}
+#endif

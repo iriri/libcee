@@ -4,9 +4,10 @@
 #include <cee/mtx.h>
 
 #define THREADC 64
-#define LIM 10000000000ll
+#define LIM 1000000ll
 
-long long sum;
+/* GCC seems to compile everything away if this isn't volatile. */
+volatile long long sum;
 mtx lock;
 
 void *

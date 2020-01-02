@@ -2,8 +2,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <time.h>
-#include <unistd.h>
 
+#include <cee/cee.h>
 #include <cee/ftx.h>
 #include <cee/xops.h>
 
@@ -16,12 +16,13 @@ static const ftx SIGNALED = 2;
 
 void
 evt_wait(evt *e) {
-    useconds_t usec = 1;
     for (int i = 0; i < SPINS; i++) {
-        if (xchg_acr(&e->_state, CONSUMED) == SIGNALED) {
-            return;
+        if (xget_rlx(&e->_state) == SIGNALED) {
+            if (xchg_acr(&e->_state, CONSUMED) == SIGNALED) {
+                return;
+            }
         }
-        usec = ftx_backoff(usec);
+        cee_pause16();
     }
 
     while (xchg_acr(&e->_state, CONSUMED) != SIGNALED) {
@@ -40,12 +41,13 @@ evt_trywait(evt *e) {
 
 bool
 evt_timedwait(evt *e, const struct timespec *timeout) {
-    useconds_t usec = 1;
     for (int i = 0; i < SPINS; i++) {
-        if (xchg_acr(&e->_state, CONSUMED) == SIGNALED) {
-            return true;
+        if (xget_rlx(&e->_state) == SIGNALED) {
+            if (xchg_acr(&e->_state, CONSUMED) == SIGNALED) {
+                return true;
+            }
         }
-        usec = ftx_backoff(usec);
+        cee_pause16();
     }
 
     while (xchg_acr(&e->_state, CONSUMED) != SIGNALED) {
@@ -54,7 +56,7 @@ evt_timedwait(evt *e, const struct timespec *timeout) {
             xcas_s_acr_rlx(&e->_state, &state, WAITING) &&
             ftx_timedwait(&e->_state, WAITING, timeout) == ETIMEDOUT
         ) {
-            return xchg_acr(&e->_state, CONSUMED) == SIGNALED;
+            return false;
         }
     }
     return true;

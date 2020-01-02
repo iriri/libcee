@@ -56,11 +56,7 @@ ftx_timedwait(_Atomic ftx *f, ftx val, const struct timespec *timeout) {
             clock_gettime(CLOCK_MONOTONIC, &now);
             uint32_t usec1 = usec - ((now.tv_sec - start.tv_sec) * 1000000);
             long nsec = now.tv_nsec - start.tv_nsec;
-            if (nsec >= 0) {
-                usec1 -= nsec / 1000;
-            } else {
-                usec1 -= (1000000000 + nsec) / 1000;
-            }
+            usec1 -= nsec >= 0 ? nsec / 1000 : (1000000000 + nsec) / 1000;
             if (usec1 > usec) {
                 return ETIMEDOUT;
             }

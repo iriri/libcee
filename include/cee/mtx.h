@@ -6,18 +6,21 @@
 
 #include <cee/ftx.h>
 
+#if MTX_IMPL == 0
 typedef union mtx {
     _Atomic ftx _state;
     struct {
-#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-        _Atomic uint8_t _locked, _contended;
-        const uint8_t _pad, _pad1;
-#else
-        const uint8_t _pad1, _pad;
-        _Atomic uint8_t _contended, _locked;
-#endif
+        _Atomic uint8_t _locked;
+        uint8_t _waiterc[3];
     };
 } mtx;
+#elif MTX_IMPL == 1
+typedef struct mtx {
+    _Atomic ftx _state;
+} mtx;
+#else
+#error "pick one"
+#endif
 
 #define mtx_make() (const mtx){0}
 

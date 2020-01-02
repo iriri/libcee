@@ -6,7 +6,6 @@
 #include <string.h>
 
 #define p(T) p_paste_(T)
-#define p_paste_(T) p_##T##_
 #define P_DEF(T) typedef T *p(T)
 
 /* `cee_assert` never becomes a noop, even when `NDEBUG` is set. */
@@ -15,6 +14,11 @@
         cee_assert_(__FILE__, __LINE__, #pred) : (void)0)
 
 /* ---------------------------- Implementation ---------------------------- */
+#define p_paste_(T) p_##T##_
+
+__attribute__((cold, noreturn)) void cee_assert_(
+    const char *, unsigned, const char *);
+
 typedef uint32_t cee_u32_;
 typedef uint64_t cee_u64_;
 
@@ -38,6 +42,32 @@ CEE_U_DECL_(256)
     u; \
 })
 
-__attribute__((cold, noreturn)) void cee_assert_(
-    const char *, unsigned, const char *);
+#if defined(__i386__) || defined(__x86_64__)
+#define cee_pause() __asm__ __volatile__("pause")
+#elif defined(__arm__) || defined(__aarch64__)
+#define cee_pause() __asm__ __volatile__("yield")
+#else
+#define cee_pause() __asm__ __volatile__("");
+#endif
+
+/* GCC collapses all of the pauses into a single instruction when looping past
+ * 8(?) so... */
+#define cee_pause16() if (1) { \
+    cee_pause(); \
+    cee_pause(); \
+    cee_pause(); \
+    cee_pause(); \
+    cee_pause(); \
+    cee_pause(); \
+    cee_pause(); \
+    cee_pause(); \
+    cee_pause(); \
+    cee_pause(); \
+    cee_pause(); \
+    cee_pause(); \
+    cee_pause(); \
+    cee_pause(); \
+    cee_pause(); \
+    cee_pause(); \
+} else (void)0
 #endif

@@ -1,7 +1,6 @@
 #ifndef CEE_EVT_H
 #define CEE_EVT_H
 #include <stdbool.h>
-#include <stdint.h>
 #include <time.h>
 
 #include <cee/ftx.h>

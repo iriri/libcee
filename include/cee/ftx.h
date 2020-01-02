@@ -10,5 +10,4 @@ int ftx_wait(_Atomic ftx *, ftx);
 int ftx_timedwait(_Atomic ftx *, ftx, const struct timespec *);
 void ftx_wake(_Atomic ftx *);
 void ftx_wakeall(_Atomic ftx *);
-useconds_t ftx_backoff(useconds_t);
 #endif

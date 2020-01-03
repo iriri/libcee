@@ -22,7 +22,7 @@ evt_wait(evt *e) {
                 return;
             }
         }
-        cee_pause16();
+        cee_pause8();
     }
 
     while (xchg_acr(&e->_state, CONSUMED) != SIGNALED) {
@@ -47,7 +47,7 @@ evt_timedwait(evt *e, const struct timespec *timeout) {
                 return true;
             }
         }
-        cee_pause16();
+        cee_pause8();
     }
 
     while (xchg_acr(&e->_state, CONSUMED) != SIGNALED) {

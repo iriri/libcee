@@ -17,8 +17,10 @@
 
 static const int SPINS = 64;
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+static const ftx LOCKED = 0x00000001;
 static const ftx WAITER = 0x00000100;
 #else
+static const ftx LOCKED = 0x01000000;
 static const ftx WAITER = 0x00000001;
 #endif
 
@@ -31,11 +33,11 @@ mtx_lock_(mtx *m) {
                 return;
             }
         }
-        cee_pause16();
+        cee_pause8();
     }
 
     for (ftx s = xadd_acr(&m->_state, WAITER); ; s = xget_rlx(&m->_state)) {
-        if ((s & 0x1) == 0x0) {
+        if ((s & LOCKED) == 0x0) {
             uint8_t unlocked = 0;
             if (xcas_w_acr_rlx(&m->_locked, &unlocked, 1)) {
                 xsub_acr(&m->_state, WAITER);
@@ -62,11 +64,11 @@ mtx_timedlock_(mtx *m, const struct timespec *timeout) {
                 return true;
             }
         }
-        cee_pause16();
+        cee_pause8();
     }
 
     for (ftx s = xadd_acr(&m->_state, WAITER); ; s = xget_rlx(&m->_state)) {
-        if ((s & 0x1) == 0x0) {
+        if ((s & LOCKED) == 0x0) {
             uint8_t unlocked = 0;
             if (xcas_w_acr_rlx(&m->_locked, &unlocked, 1)) {
                 xsub_acr(&m->_state, WAITER);
@@ -83,16 +85,23 @@ mtx_timedlock_(mtx *m, const struct timespec *timeout) {
 
 void
 mtx_unlock_(mtx *m) {
-    if (xsub_acr(&m->_state, 0x1) == 0x1) {
+    ftx prev = xsub_acr(&m->_state, LOCKED);
+    if (prev == LOCKED) {
         return;
     }
-    for (int i = 0; i < SPINS; i++) {
-        if (xget_rlx(&m->_locked) == 1) {
-            return;
-        }
-        cee_pause16();
-    }
 
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    if (prev >> 8 > 4) {
+#else
+    if ((prev ^ LOCKED) > 4) {
+#endif
+        for (int i = 0; i < SPINS; i++) {
+            cee_pause8();
+            if (xget_rlx(&m->_locked) == 1) {
+                return;
+            }
+        }
+    }
     ftx_wake(&m->_state);
 }
 #else
@@ -125,7 +134,7 @@ mtx_lock_(mtx *m) {
         if ((s & LOCKBIT) != 0x0) {
             if (i < SPINS) {
                 i++;
-                cee_pause16();
+                cee_pause8();
             } else {
                 ftx_wait(&m->_state, s);
             }
@@ -156,10 +165,8 @@ mtx_timedlock_(mtx *m, const struct timespec *timeout) {
         if ((s & LOCKBIT) != 0x0) {
             if (i < SPINS) {
                 i++;
-                cee_pause16();
-            } else if (
-                ftx_timedwait(&m->_state, s, timeout) == ETIMEDOUT
-            ) {
+                cee_pause8();
+            } else if (ftx_timedwait(&m->_state, s, timeout) == ETIMEDOUT) {
                 return false;
             }
             s = xget_rlx(&m->_state);
@@ -171,16 +178,19 @@ mtx_timedlock_(mtx *m, const struct timespec *timeout) {
 
 void
 mtx_unlock_(mtx *m) {
-    if (xsub_acr(&m->_state, LOCKED) == LOCKED) {
+    ftx prev = xsub_acr(&m->_state, LOCKED);
+    if (prev == LOCKED) {
         return;
     }
-    for (int i = 0; i < SPINS; i++) {
-        if ((xget_rlx(&m->_state) & LOCKBIT) != 0x0) {
-            return;
-        }
-        cee_pause16();
-    }
 
+    if ((prev ^ LOCKBIT) > 4) {
+        for (int i = 0; i < SPINS; i++) {
+            cee_pause8();
+            if ((xget_rlx(&m->_state) & LOCKBIT) != 0x0) {
+                return;
+            }
+        }
+    }
     ftx_wake(&m->_state);
 }
 #endif

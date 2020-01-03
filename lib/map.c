@@ -154,8 +154,7 @@ DEF_ALL(MAP_REP_DECL)
         uint32_t hash = djbx33x((unsigned char *)amp(key), size(key)); \
         for (size_t i = hash % m->cap; ; i = (i + 1) % m->cap) { \
             switch (m->bkts[i].state) { \
-            case MAP_BKT_EMPTY_: \
-                return false; \
+            case MAP_BKT_EMPTY_: return false; \
             case MAP_BKT_FULL_: \
                 if (eq(key, m->bkts[i].key)) { \
                     if (val) { \
@@ -175,8 +174,7 @@ DEF_ALL(MAP_GET_DECL)
         uint32_t hash = djbx33x((unsigned char *)amp(key), size(key)); \
         for (size_t i = hash % m->cap; ; i = (i + 1) % m->cap) { \
             switch (m->bkts[i].state) { \
-            case MAP_BKT_EMPTY_: \
-                return false; \
+            case MAP_BKT_EMPTY_: return false; \
             case MAP_BKT_FULL_: \
                 if (eq(key, m->bkts[i].key)) { \
                     m->bkts[i].state = MAP_BKT_TOMB_; \

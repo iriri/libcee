@@ -50,17 +50,9 @@ CEE_U_DECL_(256)
 #define cee_pause() __asm__ __volatile__("");
 #endif
 
-/* GCC collapses all of the pauses into a single instruction when looping past
- * 8(?) so... */
-#define cee_pause16() if (1) { \
-    cee_pause(); \
-    cee_pause(); \
-    cee_pause(); \
-    cee_pause(); \
-    cee_pause(); \
-    cee_pause(); \
-    cee_pause(); \
-    cee_pause(); \
+/* GCC sometimes collapses all of the pauses into a single instruction when
+ * looping so... */
+#define cee_pause8() if (1) { \
     cee_pause(); \
     cee_pause(); \
     cee_pause(); \

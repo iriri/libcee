@@ -4,7 +4,7 @@
 #include <cee/mtx.h>
 
 #define THREADC 64
-#define LIM 1000000ll
+#define LIM 100000ll
 
 /* GCC seems to compile everything away if this isn't volatile. */
 volatile long long sum;
@@ -12,11 +12,11 @@ mtx lock;
 
 void *
 adder(__attribute__((unused)) void *arg) {
-    mtx_lock(&lock);
     for (long long i = 0; i < LIM; i++) {
+        mtx_lock(&lock);
         sum++;
+        mtx_unlock(&lock);
     }
-    mtx_unlock(&lock);
     return NULL;
 }
 

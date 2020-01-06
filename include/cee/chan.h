@@ -8,6 +8,7 @@
 #include <cee/cee.h>
 #include <cee/evt.h>
 #include <cee/mtx.h>
+#include <cee/xops.h>
 
 #define chan(T) chan_paste_(T)
 #define CHAN_DEF(T) \
@@ -16,6 +17,7 @@
         struct { \
             uint32_t cap; \
             mtx _lock; \
+            const uint8_t _pad[64 - sizeof(uint32_t) - sizeof(mtx)]; \
             _Atomic uint32_t openc, refc; \
         }; \
         T *const _phantom; \
@@ -52,8 +54,8 @@ typedef enum chan_op {
 #define chan_close(c) chan_close_(&(c)->_chan)
 
 #define chan_cap(c) ((c)->cap)
-#define chan_openc(c) ((c)->openc)
-#define chan_refc(c) ((c)->refc)
+#define chan_openc(c) xget_rlx(&(c)->openc)
+#define chan_refc(c) xget_rlx(&(c)->refc)
 
 #define chan_send(c, msg) \
     chan_check_(c, msg, CHAN_MATCH_(msg, chan_send_, c, msg, __COUNTER__, ))
@@ -171,6 +173,7 @@ typedef union chan_waiter_ {
 typedef struct chan_hdr_ {
     uint32_t cap;
     mtx lock;
+    const uint8_t pad[64 - sizeof(uint32_t) - sizeof(mtx)];
     _Atomic uint32_t openc, refc;
     chan_waiter_root_ sendq, recvq;
 } chan_hdr_;
@@ -178,6 +181,7 @@ typedef struct chan_hdr_ {
 typedef struct chan_unbuf_ {
     uint32_t cap;
     mtx lock;
+    const uint8_t pad[64 - sizeof(uint32_t) - sizeof(mtx)];
     _Atomic uint32_t openc, refc;
     chan_waiter_root_ sendq, recvq;
     size_t msgsz;
@@ -221,13 +225,14 @@ CHAN_DEF_ALL_(CHAN_CELL_DECL_, )
     typedef struct chan_buf_(T) { \
         uint32_t cap; \
         mtx lock; \
+        const uint8_t pad[64 - sizeof(uint32_t) - sizeof(mtx)]; \
         _Atomic uint32_t openc, refc; \
         chan_waiter_root_ sendq, recvq; \
-        const unsigned char pad[64 - (2 * sizeof(chan_waiter_root_))]; \
+        const uint8_t pad1[64 - (2 * sizeof(chan_waiter_root_))]; \
         chan_aun64_ write; \
-        const unsigned char pad1[64 - sizeof(chan_aun64_)]; \
+        const uint8_t pad2[64 - sizeof(chan_aun64_)]; \
         chan_aun64_ read; \
-        const unsigned char pad2[64 - sizeof(chan_aun64_)]; \
+        const uint8_t pad3[64 - sizeof(chan_aun64_)]; \
         chan_cell_(T) buf[]; \
     } chan_buf_(T);
 CHAN_DEF_ALL_(CHAN_BUF_DECL_, )

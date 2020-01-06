@@ -6,7 +6,6 @@
 
 #include <cee/ftx.h>
 
-#if MTX_IMPL == 0
 typedef union mtx {
     _Atomic ftx _state;
     struct {
@@ -14,13 +13,6 @@ typedef union mtx {
         uint8_t _waiterc[3];
     };
 } mtx;
-#elif MTX_IMPL == 1
-typedef struct mtx {
-    _Atomic ftx _state;
-} mtx;
-#else
-#error "pick one"
-#endif
 
 #define mtx_make() (const mtx){0}
 

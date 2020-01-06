@@ -1,5 +1,7 @@
 #include <errno.h>
+#include <sched.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <time.h>
 
@@ -9,29 +11,11 @@
 
 #include <cee/evt.h>
 
-static const int SPINS = 64;
+static const int NPAUSES = 8;
+static const int NYIELDS = 8;
 static const ftx CONSUMED = 0;
 static const ftx WAITING = 1;
 static const ftx SIGNALED = 2;
-
-void
-evt_wait(evt *e) {
-    for (int i = 0; i < SPINS; i++) {
-        if (xget_rlx(&e->_state) == SIGNALED) {
-            if (xchg_acr(&e->_state, CONSUMED) == SIGNALED) {
-                return;
-            }
-        }
-        cee_pause8();
-    }
-
-    while (xchg_acr(&e->_state, CONSUMED) != SIGNALED) {
-        ftx state = CONSUMED;
-        if (xcas_s_acr_rlx(&e->_state, &state, WAITING)) {
-            ftx_wait(&e->_state, WAITING);
-        }
-    }
-}
 
 bool
 evt_trywait(evt *e) {
@@ -39,15 +23,20 @@ evt_trywait(evt *e) {
     return xcas_s_acr_rlx(&e->_state, &signalled, CONSUMED);
 }
 
-bool
-evt_timedwait(evt *e, const struct timespec *timeout) {
-    for (int i = 0; i < SPINS; i++) {
+static bool
+evt_wait_(evt *e, const struct timespec *timeout) {
+    for (int i = 0; i < NPAUSES + NYIELDS; i++) {
         if (xget_rlx(&e->_state) == SIGNALED) {
             if (xchg_acr(&e->_state, CONSUMED) == SIGNALED) {
                 return true;
             }
         }
-        cee_pause8();
+
+        if (i < NPAUSES) {
+            cee_pause8();
+        } else {
+            sched_yield();
+        }
     }
 
     while (xchg_acr(&e->_state, CONSUMED) != SIGNALED) {
@@ -60,6 +49,18 @@ evt_timedwait(evt *e, const struct timespec *timeout) {
         }
     }
     return true;
+}
+
+void
+evt_wait(evt *e) {
+    if (!evt_trywait(e)) {
+        evt_wait_(e, NULL);
+    }
+}
+
+bool
+evt_timedwait(evt *e, const struct timespec *timeout) {
+    return evt_trywait(e) ? true : evt_wait_(e, timeout);
 }
 
 void

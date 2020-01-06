@@ -13,8 +13,6 @@ ifneq ($(findstring GCC, $(shell $(CC) --version)), )
 endif
 PREFIX ?= /usr/local
 
-CFLAGS += -DMTX_IMPL=0
-
 .PHONY: lib test
 LIB = obj/lib/libcee.a
 lib: obj $(LIB)

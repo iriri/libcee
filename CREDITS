@@ -8,4 +8,5 @@ PlanetMath and the DJBX33X hash function by, well, Daniel J. Bernstein.
 
 The mutex implementation was originally shamelessly copied from "Mutexes and
 Condition Variables using Futexes" by Steven Fuerst but has evolved somewhat
-since, probably for the worse.
+since, probably for the worse. The spinning strategy of mostly yielding rather
+than pausing is inspired by Webkit's Web Template Framework.

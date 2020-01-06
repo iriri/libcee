@@ -18,7 +18,7 @@
 
 #include <cee/chan.h>
 
-static const int SPINS = 4;
+static const int NTRIES = 4;
 static const size_t ALT_NIL = CHAN_WBLOCK;
 static const size_t ALT_MAGIC = CHAN_CLOSED;
 
@@ -174,7 +174,7 @@ buf_waitq_shift(chan_waiter_root_ *waitq, mtx *lock) {
             if (w->alt_state) {
                 size_t magic = ALT_MAGIC;
                 if (!xcas_s_rlx_rlx(w->alt_state, &magic, w->alt_id)) {
-                    xset_rlx(&w->ref, false);
+                    xset_rel(&w->ref, false);
                     continue;
                 }
             }
@@ -208,7 +208,7 @@ buf_waitq_shift(chan_waiter_root_ *waitq, mtx *lock) {
             } \
 \
             if ((int32_t)(write.lap - lap) > 0) { \
-                if (++i > SPINS) { \
+                if (++i > NTRIES) { \
                     return CHAN_WBLOCK; \
                 } \
                 sched_yield(); \
@@ -242,7 +242,7 @@ buf_waitq_shift(chan_waiter_root_ *waitq, mtx *lock) {
                 if (xget_acq(&c->openc) == 0) { \
                     return CHAN_CLOSED; \
                 } \
-                if (++i > SPINS) { \
+                if (++i > NTRIES) { \
                     return CHAN_WBLOCK; \
                 } \
                 sched_yield(); \
@@ -272,7 +272,7 @@ unbuf_try(chan_unbuf_ *c, void *msg, chan_waiter_root_ *waitq) {
         if (w->alt_state) {
             size_t magic = ALT_MAGIC;
             if (!xcas_s_rlx_rlx(w->alt_state, &magic, w->alt_id)) {
-                xset_rlx(&w->ref, false);
+                xset_rel(&w->ref, false);
                 continue;
             }
         }
@@ -404,7 +404,7 @@ unbuf_rendez_or_wait(
             if (w1->alt_state) {
                 size_t magic = ALT_MAGIC;
                 if (!xcas_s_rlx_rlx(w1->alt_state, &magic, w1->alt_id)) {
-                    xset_rlx(&w1->ref, false);
+                    xset_rel(&w1->ref, false);
                     continue;
                 }
             }
@@ -606,7 +606,7 @@ alt_remove_waiters(chan_case cases[static 1], size_t len, size_t state) {
         bool onqueue = waitq_remove(&cc->w);
         mtx_unlock(&cc->c->hdr.lock);
         if (!onqueue && i != state) {
-            while (xget_rlx(&cc->w.hdr.ref)) {
+            while (xget_acq(&cc->w.hdr.ref)) {
                 sched_yield();
             }
         }

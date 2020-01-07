@@ -19,10 +19,10 @@
 
 static const int NPAUSES = 8;
 static const int NYIELDS = 32;
+static const int NMORPHS = 128;
 /* `NCONTENDED = 0` actually performs best in synthetic microbenchmarks but I
  * really hate the idea of unnecessarily spinning in `mtx_unlock`. */
-static const int NCONTENDED = 4;
-static const int NMORPHS = 128;
+static const ftx NCONTENDED = 4;
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 static const ftx LOCKED = 0x00000001;
 static const ftx WAITER = 0x00000100;
@@ -54,17 +54,17 @@ mtx_lock__(mtx *m, const struct timespec *timeout) {
         }
     }
 
-    for (ftx s = xadd_acr(&m->_state, WAITER); ; s = xget_rlx(&m->_state)) {
+    for (ftx s = xadd_rlx(&m->_state, WAITER); ; s = xget_rlx(&m->_state)) {
         if ((s & LOCKED) == 0x0) {
             uint8_t unlocked = 0;
             if (xcas_w_acr_rlx(&m->_locked, &unlocked, 1)) {
-                xsub_acr(&m->_state, WAITER);
+                xsub_rlx(&m->_state, WAITER);
                 return true;
             }
         }
 
         if (ftx_timedwait(&m->_state, s, timeout) == ETIMEDOUT) {
-            xsub_acr(&m->_state, WAITER);
+            xsub_rlx(&m->_state, WAITER);
             return false;
         }
     }

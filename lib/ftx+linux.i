@@ -2,6 +2,7 @@
 #include <limits.h>
 #include <linux/futex.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <sys/syscall.h>
 #include <time.h>
 
@@ -12,21 +13,12 @@
 
 int
 ftx_wait(_Atomic ftx *f, ftx val) {
-    /* I hate errno so much */
-    while (
-        syscall(SYS_futex, f, FUTEX_WAIT_PRIVATE, val, NULL, NULL, 0) != 0
-    ) {
-        switch (errno) {
-        case EINTR: break;
-        case EAGAIN: return errno;
-        default: cee_assert(false);
-        }
-    }
-    return 0;
+    return ftx_timedwait(f, val, NULL);
 }
 
 int
 ftx_timedwait(_Atomic ftx *f, ftx val, const struct timespec *timeout) {
+    /* I hate errno so much */
     while (syscall(
         SYS_futex,
         f,

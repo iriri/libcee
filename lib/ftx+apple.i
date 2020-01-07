@@ -31,6 +31,10 @@ ftx_wait(_Atomic ftx *f, ftx val) {
 
 int
 ftx_timedwait(_Atomic ftx *f, ftx val, const struct timespec *timeout) {
+    if (!timeout) {
+        return ftx_wait(f, val);
+    }
+
     struct timespec start;
     clock_gettime(CLOCK_MONOTONIC, &start);
     if (timeout->tv_sec < start.tv_sec) {

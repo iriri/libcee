@@ -22,7 +22,8 @@ test: obj $(TEST)
 
 obj:
 	mkdir -p obj/lib
-	mkdir -p obj/test/{chan,evt,ftx,map,mtx,vec}
+	mkdir -p obj/test
+	for d in test/*; do mkdir obj/$$d; done
 
 LIB_DEPS = $(wildcard include/cee/*.h)
 LIB_OBJS = $(patsubst %.c, obj/%.o, $(wildcard lib/*.c))
@@ -39,7 +40,7 @@ $(TEST): obj/test/%: test/%.c $(LIB)
 clean:
 	rm -f obj/lib/*.o
 	rm -f obj/lib/libcee.a
-	rm -f obj/test/{chan,evt,ftx,map,mtx,vec}/*
+	for d in test/*; do rm -f obj/$$d/*; done
 
 install: $(LIB)
 	install -Dt $(PREFIX)/lib/ $(LIB)

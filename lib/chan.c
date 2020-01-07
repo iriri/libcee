@@ -316,7 +316,7 @@ unbuf_try(chan_unbuf_ *c, void *msg, chan_waiter_root_ *waitq) {
             } \
             mtx_unlock(&c->lock); \
  \
-            if (timeout == NULL) { \
+            if (!timeout) { \
                 evt_wait(&trg); \
             } else if (!evt_timedwait(&trg, timeout)) { \
                 mtx_lock(&c->lock); \
@@ -359,7 +359,7 @@ unbuf_try(chan_unbuf_ *c, void *msg, chan_waiter_root_ *waitq) {
             } \
             mtx_unlock(&c->lock); \
  \
-            if (timeout == NULL) { \
+            if (!timeout) { \
                 evt_wait(&trg); \
             } else if (!evt_timedwait(&trg, timeout)) { \
                 mtx_lock(&c->lock); \
@@ -434,7 +434,7 @@ unbuf_rendez(
         return rc;
     }
 
-    if (timeout == NULL) {
+    if (!timeout) {
         evt_wait(&trg);
     } else if (!evt_timedwait(&trg, timeout)) {
         mtx_lock(&c->lock);

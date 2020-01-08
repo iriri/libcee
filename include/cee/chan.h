@@ -17,7 +17,6 @@
         struct { \
             uint32_t cap; \
             mtx _lock; \
-            const uint8_t _pad[64 - sizeof(uint32_t) - sizeof(mtx)]; \
             _Atomic uint32_t openc, refc; \
         }; \
         T *const _phantom; \
@@ -173,16 +172,16 @@ typedef union chan_waiter_ {
 typedef struct chan_hdr_ {
     uint32_t cap;
     mtx lock;
-    const uint8_t pad[64 - sizeof(uint32_t) - sizeof(mtx)];
     _Atomic uint32_t openc, refc;
+    const uint8_t pad[64 - sizeof(uint32_t) - sizeof(mtx)];
     chan_waiter_root_ sendq, recvq;
 } chan_hdr_;
 
 typedef struct chan_unbuf_ {
     uint32_t cap;
     mtx lock;
-    const uint8_t pad[64 - sizeof(uint32_t) - sizeof(mtx)];
     _Atomic uint32_t openc, refc;
+    const uint8_t pad[64 - sizeof(uint32_t) - sizeof(mtx)];
     chan_waiter_root_ sendq, recvq;
     size_t msgsz;
 } chan_unbuf_;
@@ -225,8 +224,8 @@ CHAN_DEF_ALL_(CHAN_CELL_DECL_, )
     typedef struct chan_buf_(T) { \
         uint32_t cap; \
         mtx lock; \
-        const uint8_t pad[64 - sizeof(uint32_t) - sizeof(mtx)]; \
         _Atomic uint32_t openc, refc; \
+        const uint8_t pad[64 - sizeof(uint32_t) - sizeof(mtx)]; \
         chan_waiter_root_ sendq, recvq; \
         const uint8_t pad1[64 - (2 * sizeof(chan_waiter_root_))]; \
         chan_aun64_ write; \

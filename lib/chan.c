@@ -19,8 +19,6 @@
 #include <cee/chan.h>
 
 static const int NTRIES = 4;
-static const size_t ALT_NIL = CHAN_WBLOCK;
-static const size_t ALT_MAGIC = CHAN_CLOSED;
 
 void *
 chan_make_(size_t msgsz, size_t cap, size_t cellsz) {
@@ -172,7 +170,7 @@ buf_waitq_shift(chan_waiter_root_ *waitq, mtx *lock) {
         mtx_unlock(lock);
         if (w) {
             if (w->alt_state) {
-                size_t magic = ALT_MAGIC;
+                size_t magic = CHAN_WBLOCK;
                 if (!xcas_s_rlx_rlx(w->alt_state, &magic, w->alt_id)) {
                     xset_rel(&w->ref, false);
                     continue;
@@ -270,7 +268,7 @@ unbuf_try(chan_unbuf_ *c, void *msg, chan_waiter_root_ *waitq) {
             return CHAN_WBLOCK;
         }
         if (w->alt_state) {
-            size_t magic = ALT_MAGIC;
+            size_t magic = CHAN_WBLOCK;
             if (!xcas_s_rlx_rlx(w->alt_state, &magic, w->alt_id)) {
                 xset_rel(&w->ref, false);
                 continue;
@@ -292,7 +290,7 @@ unbuf_try(chan_unbuf_ *c, void *msg, chan_waiter_root_ *waitq) {
     static chan_rc \
     buf_send_##T(chan_buf_(T) *c, T msg, const struct timespec *timeout) { \
         evt trg = evt_make(); \
-        chan_waiter_buf_ w = {.trg = &trg, .alt_id = ALT_NIL}; \
+        chan_waiter_buf_ w = {.trg = &trg}; \
         for ( ; ; ) { \
             chan_rc rc = buf_trysend##T(c, msg); \
             if (rc != CHAN_WBLOCK) { \
@@ -337,7 +335,7 @@ unbuf_try(chan_unbuf_ *c, void *msg, chan_waiter_root_ *waitq) {
     static chan_rc \
     buf_recv_##T(chan_buf_(T) *c, T *msg, const struct timespec *timeout) { \
         evt trg = evt_make(); \
-        chan_waiter_buf_ w = {.trg = &trg, .alt_id = ALT_NIL}; \
+        chan_waiter_buf_ w = {.trg = &trg}; \
         for ( ; ; ) { \
             chan_rc rc = buf_tryrecv##T(c, msg); \
             if (rc != CHAN_WBLOCK) { \
@@ -402,7 +400,7 @@ unbuf_rendez_or_wait(
         if (w1) {
             mtx_unlock(&c->lock);
             if (w1->alt_state) {
-                size_t magic = ALT_MAGIC;
+                size_t magic = CHAN_WBLOCK;
                 if (!xcas_s_rlx_rlx(w1->alt_state, &magic, w1->alt_id)) {
                     xset_rel(&w1->ref, false);
                     continue;
@@ -428,7 +426,7 @@ unbuf_rendez(
     chan_unbuf_ *c, void *msg, const struct timespec *timeout, chan_op op
 ) {
     evt trg = evt_make();
-    chan_waiter_unbuf_ w = {.trg = &trg, .alt_id = ALT_NIL, .msg = msg};
+    chan_waiter_unbuf_ w = {.trg = &trg, .msg = msg};
     chan_rc rc = unbuf_rendez_or_wait(c, msg, &w, op);
     if (rc != CHAN_WBLOCK) {
         return rc;
@@ -519,7 +517,7 @@ CHAN_DEF_ALL_(CHAN_TIMEDOP_DECL, )
     bool \
     chan_alt_check_##T##_(chan_ *c, chan_op op) { \
         if (c->hdr.cap == 0) { \
-            return op == CHAN_SEND ? /* Could just do the operation here? */ \
+            return op == CHAN_SEND ? \
                 &xget_rlx(&c->unbuf.recvq.next)->root != &c->unbuf.recvq : \
                 &xget_rlx(&c->unbuf.sendq.next)->root != &c->unbuf.sendq; \
         } \
@@ -549,11 +547,7 @@ chan_tryalt_(const chan_case cases[], size_t len, size_t offset) {
     return closedc == len ? CHAN_CLOSED : CHAN_WBLOCK;
 }
 
-static enum {
-    ALT_READY,
-    ALT_WAIT,
-    ALT_CLOSED,
-}
+static size_t
 alt_ready_or_wait(
     chan_case cases[static 1],
     size_t len,
@@ -583,15 +577,15 @@ alt_ready_or_wait(
             waitq_remove(&cc->w);
             mtx_unlock(&cc->c->hdr.lock);
             cc->w.hdr.trg = NULL;
-            return ALT_READY;
+            return i;
         }
         mtx_unlock(&cc->c->hdr.lock);
     }
-    return closedc == len ? ALT_CLOSED : ALT_WAIT;
+    return closedc == len ? CHAN_CLOSED : CHAN_WBLOCK;
 }
 
 static void
-alt_remove_waiters(chan_case cases[static 1], size_t len, size_t state) {
+alt_remove_waiters(chan_case cases[static 1], size_t len, size_t idx) {
     for (size_t i = 0; i < len; i++) {
         chan_case *cc = cases + i;
         if (
@@ -605,7 +599,7 @@ alt_remove_waiters(chan_case cases[static 1], size_t len, size_t state) {
         mtx_lock(&cc->c->hdr.lock);
         bool onqueue = waitq_remove(&cc->w);
         mtx_unlock(&cc->c->hdr.lock);
-        if (!onqueue && i != state) {
+        if (!onqueue && i != idx) {
             while (xget_acq(&cc->w.hdr.ref)) {
                 sched_yield();
             }
@@ -630,33 +624,38 @@ chan_alt_(chan_case cases[], size_t len, uint64_t timeout) {
         }
 
         _Atomic size_t state;
-        xset_rlx(&state, ALT_MAGIC);
-        size_t state1 = ALT_MAGIC;
-        switch (alt_ready_or_wait(cases, len, offset, &trg, &state)) {
-        case ALT_CLOSED: return CHAN_CLOSED;
-        case ALT_READY:
-            if (!xcas_s_rlx_rlx(&state, &state1, ALT_NIL)) {
-                evt_wait(&trg);
-            }
-            break;
-        case ALT_WAIT:
+        xset_rlx(&state, CHAN_WBLOCK);
+        bool inc = false;
+        switch (idx = alt_ready_or_wait(cases, len, offset, &trg, &state)) {
+        case CHAN_CLOSED: return CHAN_CLOSED;
+        case CHAN_WBLOCK:
             if (timeout == 0) {
                 evt_wait(&trg);
             } else if (!evt_timedwait(&trg, &ts)) {
                 timedout = true;
-                if (!xcas_s_rlx_rlx(&state, &state1, ALT_NIL)) {
+                if (!xcas_s_rlx_rlx(&state, &idx, CHAN_CLOSED)) {
                     evt_wait(&trg);
                 }
                 break;
             }
-            xcas_s_rlx_rlx(&state, &state1, ALT_NIL);
+            xcas_s_rlx_rlx(&state, &idx, CHAN_CLOSED);
+            break;
+        default: {
+            size_t exp = CHAN_WBLOCK;
+            if (xcas_s_rlx_rlx(&state, &exp, idx)) {
+                inc = true;
+            } else {
+                evt_wait(&trg);
+                idx = exp;
+            }
+        }
         }
 
-        alt_remove_waiters(cases, len, state1);
-        if (state1 != ALT_MAGIC) {
-            chan_case *cc = cases + state1;
-            if (cc->c->hdr.cap == 0 || cc->fns.try(cc) == CHAN_OK) {
-                return state1;
+        alt_remove_waiters(cases, len, idx);
+        if (idx < CHAN_WBLOCK) {
+            chan_case *cc = cases + idx;
+            if ((!inc && cc->c->hdr.cap == 0) || cc->fns.try(cc) == CHAN_OK) {
+                return idx;
             }
         }
     } while (!timedout);

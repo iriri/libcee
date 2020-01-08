@@ -25,7 +25,7 @@ evt_trywait(evt *e) {
 
 static bool
 evt_wait_(evt *e, const struct timespec *timeout) {
-    for (int i = 0; i < NPAUSES + NYIELDS; i++) {
+    for (int i = 0; ; i++) {
         if (xget_rlx(&e->_state) == SIGNALED) {
             if (xchg_acr(&e->_state, CONSUMED) == SIGNALED) {
                 return true;
@@ -34,8 +34,10 @@ evt_wait_(evt *e, const struct timespec *timeout) {
 
         if (i < NPAUSES) {
             cee_pause8();
-        } else {
+        } else if (i < NPAUSES + NYIELDS) {
             sched_yield();
+        } else {
+            break;
         }
     }
 

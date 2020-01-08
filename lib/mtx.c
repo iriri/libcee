@@ -39,7 +39,7 @@ mtx_trylock_(mtx *m) {
 
 static bool
 mtx_lock__(mtx *m, const struct timespec *timeout) {
-    for (int i = 0; i < NPAUSES + NYIELDS; i++) {
+    for (int i = 0; ; i++) {
         if (xget_rlx(&m->_locked) == 0) {
             uint8_t unlocked = 0;
             if (xcas_w_acr_rlx(&m->_locked, &unlocked, 1)) {
@@ -49,8 +49,10 @@ mtx_lock__(mtx *m, const struct timespec *timeout) {
 
         if (i < NPAUSES) {
             cee_pause8();
-        } else {
+        } else if (i < NPAUSES + NYIELDS) {
             sched_yield();
+        } else {
+            break;
         }
     }
 

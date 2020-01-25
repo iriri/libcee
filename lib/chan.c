@@ -200,7 +200,7 @@ buf_waitq_shift(chan_waiter_root_ *waitq, mtx *lock) {
                     continue; \
                 } \
                 cell->msg = msg; \
-                xset_rel(&cell->lap, lap + 1); \
+                xset_seq(&cell->lap, lap + 1); \
                 buf_waitq_shift(&c->recvq, &c->lock); \
                 return CHAN_OK; \
             } \
@@ -231,7 +231,7 @@ buf_waitq_shift(chan_waiter_root_ *waitq, mtx *lock) {
                     continue; \
                 } \
                 *msg = cell->msg; \
-                xset_rel(&cell->lap, lap + 1); \
+                xset_seq(&cell->lap, lap + 1); \
                 buf_waitq_shift(&c->sendq, &c->lock); \
                 return CHAN_OK; \
             } \
@@ -304,7 +304,7 @@ unbuf_try(chan_unbuf_ *c, void *msg, chan_waiter_root_ *waitq) {
             } \
             /* TODO: Casts are evil. Figure out how to get rid of these. */ \
             waitq_push(&c->sendq, (chan_waiter_ *)&w); \
-            chan_un64_ write = {xget_rlx(&c->write.u64)}; \
+            chan_un64_ write = {xget_seq(&c->write.u64)}; \
             if ( \
                 (int32_t)(write.lap - xget_rlx(&c->buf[write.idx].lap)) <= 0 \
             ) { \
@@ -345,7 +345,7 @@ unbuf_try(chan_unbuf_ *c, void *msg, chan_waiter_root_ *waitq) {
             mtx_lock(&c->lock); \
             waitq_push(&c->recvq, (chan_waiter_ *)&w); \
             chan_un64_ read = {xget_rlx(&c->read.u64)}; \
-            if ((int32_t)(read.lap - xget_rlx(&c->buf[read.idx].lap)) <= 0) { \
+            if ((int32_t)(read.lap - xget_seq(&c->buf[read.idx].lap)) <= 0) { \
                 waitq_remove((chan_waiter_ *)&w); \
                 mtx_unlock(&c->lock); \
                 continue; \
@@ -522,8 +522,8 @@ CHAN_DEF_ALL_(CHAN_TIMEDOP_DECL, )
                 &xget_rlx(&c->unbuf.sendq.next)->root != &c->unbuf.sendq; \
         } \
         chan_un64_ u = op == CHAN_SEND ? \
-            (const chan_un64_){xget_rlx(&c->buf_##T.write.u64)} : \
-            (const chan_un64_){xget_rlx(&c->buf_##T.read.u64)}; \
+            (const chan_un64_){xget_seq(&c->buf_##T.write.u64)} : \
+            (const chan_un64_){xget_seq(&c->buf_##T.read.u64)}; \
         chan_cell_(T) *cell = c->buf_##T.buf + u.idx; \
         return (int32_t)(u.lap - xget_rlx(&cell->lap)) <= 0; \
     }

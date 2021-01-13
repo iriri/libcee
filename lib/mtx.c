@@ -63,9 +63,7 @@ mtx_lock__(mtx *m, const struct timespec *timeout) {
                 xsub_rlx(&m->_state, WAITER);
                 return true;
             }
-        }
-
-        if (ftx_timedwait(&m->_state, s, timeout) == ETIMEDOUT) {
+        } else if (ftx_timedwait(&m->_state, s, timeout) == ETIMEDOUT) {
             xsub_rlx(&m->_state, WAITER);
             return false;
         }
